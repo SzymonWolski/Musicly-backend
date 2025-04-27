@@ -1,0 +1,107 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Uzytkownik {
+  ID_uzytkownik Int         @id @default(autoincrement())
+  email         String
+  imie          String
+  nick          String
+  Polubienia    Polubienia[]
+  Playlisty     Playlista[]
+  Odtwarzacze   Odtwarzacz[]
+}
+
+model Autorzy {
+  ID_autora             Int     @id @default(autoincrement())
+  imie                  String
+  kryptonim_artystyczny String
+  nazwisko              String
+  Utwory                Utwor[]
+  Albumy                Album[]
+}
+
+model Utwor {
+  ID_utworu    Int              @id @default(autoincrement())
+  czas_trwania Int
+  data_wydania String
+  ID_autora    Int
+  nazwa_utworu String
+
+  Autor        Autorzy          @relation(fields: [ID_autora], references: [ID_autora])
+  Polubienia   Polubienia[]
+  Numeracja    Numeracja_utworu?
+  Playlisty    Playlista[]
+  Odtwarzacze  Odtwarzacz[]
+
+  PlaylistaUtwor PlaylistaUtwor[]
+}
+
+model Album {
+  ID_albumu     Int        @id @default(autoincrement())
+  ID_autora     Int
+  nazwa_albumu  String
+  nr_kolejnosci Int
+
+  Autor         Autorzy    @relation(fields: [ID_autora], references: [ID_autora])
+  Odtwarzacze   Odtwarzacz[]
+}
+
+model Polubienia {
+  ID_piosenki    Int
+  ID_uzytkownik  Int
+  data_polubienia String
+
+  Uzytkownik     Uzytkownik @relation(fields: [ID_uzytkownik], references: [ID_uzytkownik])
+  Utwor          Utwor      @relation(fields: [ID_piosenki], references: [ID_utworu])
+
+  @@id([ID_piosenki, ID_uzytkownik])
+}
+
+model Odtwarzacz {
+  ID_odtwarzacza Int         @id @default(autoincrement())
+  ID_uzytkownik  Int
+  ID_albumu      Int?
+  ID_playlisty   Int?
+  ID_utworu      Int?
+
+  Uzytkownik     Uzytkownik @relation(fields: [ID_uzytkownik], references: [ID_uzytkownik])
+  Album          Album?     @relation(fields: [ID_albumu], references: [ID_albumu])
+  Playlista      Playlista? @relation(fields: [ID_playlisty], references: [ID_playlisty])
+  Utwor          Utwor?     @relation(fields: [ID_utworu], references: [ID_utworu])
+}
+
+model Numeracja_utworu {
+  ID_utworu     Int   @id
+  nr_kolejnosci Int
+
+  Utwor         Utwor @relation(fields: [ID_utworu], references: [ID_utworu])
+}
+
+model Playlista {
+  ID_playlisty    Int    @id @default(autoincrement())
+  ID_uzytkownik   Int
+  nazwa_playlisty String
+
+  Uzytkownik      Uzytkownik @relation(fields: [ID_uzytkownik], references: [ID_uzytkownik])
+  Utwory          PlaylistaUtwor[]
+  Odtwarzacze     Odtwarzacz[]
+
+  Utwor Utwor[]
+}
+
+model PlaylistaUtwor {
+  ID_playlisty Int
+  ID_utworu    Int
+  kolejnosc    Int
+
+  Playlista    Playlista @relation(fields: [ID_playlisty], references: [ID_playlisty])
+  Utwor        Utwor     @relation(fields: [ID_utworu], references: [ID_utworu])
+
+  @@id([ID_playlisty, ID_utworu])
+}
