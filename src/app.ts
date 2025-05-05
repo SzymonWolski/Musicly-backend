@@ -7,6 +7,7 @@ import path, { dirname } from 'path';
 import swaggerUi from 'swagger-ui-express';
 import { fileURLToPath } from 'url';
 import { generateSwagger } from './autogen';
+import * as Routes from './routes';
 
 // import authRoutes from './routers/authRoutes';
 
@@ -58,5 +59,7 @@ app.use('/docs', swaggerUi.serve, swaggerUi.setup(swaggerDocument));
 //   });
 //   res.json(user);
 // });
+
+app.use('/auth', Routes.authRoutes);
 
 export default app;
