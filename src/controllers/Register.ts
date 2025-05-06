@@ -2,44 +2,56 @@ import { sql } from 'bun';
 import { Request, Response } from 'express';
 
 interface RegisterRequestBody {
-  firstName: string;
-  lastName: string;
-  username: string;
+  nick: string;
   email: string;
   password: string;
 }
 
 interface ValidationErrors {
-  username?: string;
+  nick?: string;
   email?: string;
+  password?: string;
   [key: string]: string | undefined;
 }
 
 interface UserData {
   id: number;
-  username: string;
+  nick: string;
   email: string;
+  password: string;
 }
 
 /**
  * User registration controller
  */
 export const register = async (req: Request, res: Response): Promise<void> => {
-  const { firstName, lastName, username, email, password }: RegisterRequestBody = req.body;
+  console.log('Rejestracja użytkownika:', req.body);
+  const {nick, email, password }: RegisterRequestBody = req.body;
   const errors: ValidationErrors = {};
+
+  // 1. Dodaj walidację danych wejściowych
+  if (!nick || !email || !password) {
+    res.status(400).json({ 
+      success: false, 
+      errors: { 
+        general: 'Wszystkie pola są wymagane' 
+      } 
+    });
+    return;
+  }
 
   try {
     // Sprawdź unikalność nazwy użytkownika
-    const usernameCheck = await sql`
-      SELECT * FROM users WHERE username = ${username}
+    const nickCheck = await sql`
+      SELECT * FROM "Uzytkownik" WHERE nick = ${nick}
     `;
-    if (usernameCheck.length > 0) {
-      errors.username = 'Nazwa użytkownika jest już zajęta';
+    if (nickCheck.length > 0) {
+      errors.nick = 'Nazwa użytkownika jest już zajęta';
     }
 
     // Sprawdź unikalność emaila
     const emailCheck = await sql`
-      SELECT * FROM users WHERE email = ${email}
+      SELECT * FROM "Uzytkownik" WHERE email = ${email}
     `;
     if (emailCheck.length > 0) {
       errors.email = 'Email jest już zarejestrowany';
@@ -58,11 +70,14 @@ export const register = async (req: Request, res: Response): Promise<void> => {
       cost: saltRounds
     });
 
-    // Dodanie nowego użytkownika do bazy
+    // 2. Debugowanie wartości przed wstawieniem
+    console.log('Wartości do wstawienia:', { email, nick, hashedPassword });
+
+    // 3. Poprawione zapytanie SQL z szczegółowo określoną składnią
     const newUser = await sql`
-      INSERT INTO users (first_name, last_name, username, email, password) 
-      VALUES (${firstName}, ${lastName}, ${username}, ${email}, ${hashedPassword}) 
-      RETURNING id, username, email
+      INSERT INTO "Uzytkownik" (email, nick, haslo) 
+      VALUES (${email || ''}, ${nick || ''}, ${hashedPassword || ''}) 
+      RETURNING "ID_uzytkownik" as id, nick, email
     `;
 
     res.json({ 

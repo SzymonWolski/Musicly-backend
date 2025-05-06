@@ -10,7 +10,7 @@ datasource db {
 model Uzytkownik {
   ID_uzytkownik Int         @id @default(autoincrement())
   email         String
-  imie          String
+  haslo          String
   nick          String
   Polubienia    Polubienia[]
   Playlisty     Playlista[]
