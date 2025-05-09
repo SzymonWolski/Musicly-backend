@@ -12,6 +12,7 @@ model Uzytkownik {
   email         String
   haslo          String
   nick          String
+  isAdmin       Boolean  @default(false)
   Polubienia    Polubienia[]
   Playlisty     Playlista[]
   Odtwarzacze   Odtwarzacz[]

@@ -9,6 +9,8 @@ interface UserData {
   id: number;
   email: string;
   password: string;
+  nick: string;
+  isadmin: boolean;
 }
 
 export const login = async (req: Request, res: Response): Promise<void> => {
@@ -27,7 +29,7 @@ export const login = async (req: Request, res: Response): Promise<void> => {
   try {
     // 1. Pobierz użytkownika z bazy danych używając Bun.sql
     const users = await sql`
-      SELECT "ID_uzytkownik" as id, email, haslo as password 
+      SELECT "ID_uzytkownik" as id, email, haslo as password, "isAdmin" as isadmin, nick  
       FROM "Uzytkownik" 
       WHERE email = ${email}
     `;
