@@ -32,7 +32,7 @@ Aby zainstalować wszystkie wymagane zależności, uruchom poniższe polecenie w
 
 ```bash
 bun install
-bun add bcrypt jsonwebtoken express-validator @types/express-validator @types/bcrypt @types/jsonwebtoken
+bun add bcrypt jsonwebtoken express-validator @types/express-validator @types/bcrypt @types/jsonwebtoken multer @types/multer uuid @types/uuid
 ```
 
 ## Konfiguracja

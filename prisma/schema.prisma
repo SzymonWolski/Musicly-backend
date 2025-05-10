@@ -10,12 +10,11 @@ datasource db {
 model Uzytkownik {
   ID_uzytkownik Int         @id @default(autoincrement())
   email         String
-  haslo          String
+  haslo         String
   nick          String
-  isAdmin       Boolean  @default(false)
+  isAdmin       Boolean     @default(false)
   Polubienia    Polubienia[]
   Playlisty     Playlista[]
-  Odtwarzacze   Odtwarzacz[]
 }
 
 model Autorzy {
@@ -33,13 +32,17 @@ model Utwor {
   data_wydania String
   ID_autora    Int
   nazwa_utworu String
+  
+  // Nowe pola dla pliku
+  filename     String?
+  filepath     String?
+  mimetype     String? 
+  filesize     Int?
 
   Autor        Autorzy          @relation(fields: [ID_autora], references: [ID_autora])
   Polubienia   Polubienia[]
   Numeracja    Numeracja_utworu?
   Playlisty    Playlista[]
-  Odtwarzacze  Odtwarzacz[]
-
   PlaylistaUtwor PlaylistaUtwor[]
 }
 
@@ -50,7 +53,6 @@ model Album {
   nr_kolejnosci Int
 
   Autor         Autorzy    @relation(fields: [ID_autora], references: [ID_autora])
-  Odtwarzacze   Odtwarzacz[]
 }
 
 model Polubienia {
@@ -62,19 +64,6 @@ model Polubienia {
   Utwor          Utwor      @relation(fields: [ID_piosenki], references: [ID_utworu])
 
   @@id([ID_piosenki, ID_uzytkownik])
-}
-
-model Odtwarzacz {
-  ID_odtwarzacza Int         @id @default(autoincrement())
-  ID_uzytkownik  Int
-  ID_albumu      Int?
-  ID_playlisty   Int?
-  ID_utworu      Int?
-
-  Uzytkownik     Uzytkownik @relation(fields: [ID_uzytkownik], references: [ID_uzytkownik])
-  Album          Album?     @relation(fields: [ID_albumu], references: [ID_albumu])
-  Playlista      Playlista? @relation(fields: [ID_playlisty], references: [ID_playlisty])
-  Utwor          Utwor?     @relation(fields: [ID_utworu], references: [ID_utworu])
 }
 
 model Numeracja_utworu {
@@ -91,9 +80,7 @@ model Playlista {
 
   Uzytkownik      Uzytkownik @relation(fields: [ID_uzytkownik], references: [ID_uzytkownik])
   Utwory          PlaylistaUtwor[]
-  Odtwarzacze     Odtwarzacz[]
-
-  Utwor Utwor[]
+  Utwor           Utwor[]
 }
 
 model PlaylistaUtwor {
