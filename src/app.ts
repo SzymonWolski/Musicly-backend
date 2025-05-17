@@ -61,5 +61,6 @@ app.use('/docs', swaggerUi.serve, swaggerUi.setup(swaggerDocument));
 // });
 
 app.use('/auth', Routes.authRoutes);
+app.use('/files', Routes.fileRoutes); // Add file routes connection
 
 export default app;

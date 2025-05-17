@@ -1,5 +1,4 @@
 import authRoutes from './authRoutes';
-//import userRoutes from './usersRoutes';
-//import streamersRoutes from './streamersRoutes';
-//import streamsRoutes from './streamsRoutes';
-export { authRoutes};
+import fileRoutes from './fileRoutes';
+
+export { authRoutes, fileRoutes };

@@ -1,11 +1,13 @@
-import express, { Request, Response } from 'express';
+import { Request, Response } from 'express';
+import { Router } from 'express';
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
 import { v4 as uuidv4 } from 'uuid';
 import { sql } from 'bun';
+import * as musicMetadata from 'music-metadata';
 
-const router = express.Router();
+const router = Router();
 
 // Konfiguracja multer dla przechowywania plików
 const storage = multer.diskStorage({
@@ -50,15 +52,27 @@ router.post('/upload', upload.single('file'), async (req: RequestWithFile, res: 
     }
 
     // Sprawdź czy wszystkie wymagane dane są przesłane
-    const { nazwa_utworu, czas_trwania, data_wydania, ID_autora } = req.body;
+    const { nazwa_utworu, data_wydania /*, ID_autora */} = req.body;
     
-    if (!nazwa_utworu || !czas_trwania || !data_wydania || !ID_autora) {
+    // Commented out validation for database fields since we're just testing file upload
+    /*
+    if (!nazwa_utworu || !data_wydania) {
       // Usuń plik jeśli nie ma wszystkich danych
       fs.unlinkSync(path.join('/app/uploads', req.file.filename));
       res.status(400).json({ message: 'Brakuje wymaganych danych utworu' });
       return;
     }
+    */
 
+    // Pobierz czas trwania pliku audio automatycznie
+    const filePath = path.join('/app/uploads', req.file.filename);
+    const metadata = await musicMetadata.parseFile(filePath);
+    
+    // Czas trwania w sekundach - zaokrąglony do pełnych sekund
+    const czas_trwania = Math.round(metadata.format.duration || 0);
+
+    // Commented out SQL operations for testing file upload only
+    /*
     // Zapisz informacje o utworze w bazie danych używając SQL
     const result = await sql`
       INSERT INTO "Utwor" (
@@ -72,9 +86,9 @@ router.post('/upload', upload.single('file'), async (req: RequestWithFile, res: 
         filesize
       ) VALUES (
         ${nazwa_utworu || ''}, 
-        ${parseInt(czas_trwania) || 0}, 
+        ${czas_trwania}, 
         ${data_wydania || ''}, 
-        ${parseInt(ID_autora) || 0}, 
+        ${0}, 
         ${req.file.filename || ''}, 
         ${`/app/uploads/${req.file.filename}` || ''}, 
         ${req.file.mimetype || ''}, 
@@ -85,14 +99,22 @@ router.post('/upload', upload.single('file'), async (req: RequestWithFile, res: 
     `;
     
     const utwor = result[0];
+    */
     
-    // Zwracamy informacje o przesłanym utworu
+    // Return file information directly without database data
     res.status(201).json({
-      message: 'Utwór przesłany pomyślnie',
-      utwor
+      message: 'Plik przesłany pomyślnie (tylko test zapisu pliku)',
+      file: {
+        filename: req.file.filename,
+        originalName: req.file.originalname,
+        filepath: `/app/uploads/${req.file.filename}`,
+        mimetype: req.file.mimetype,
+        filesize: req.file.size,
+        duration: czas_trwania
+      }
     });
   } catch (error) {
-    console.error('Błąd podczas przesyłania utworu:', error);
+    console.error('Błąd podczas przesyłania pliku:', error);
     
     // Usuń plik w przypadku błędu
     if (req.file) {
