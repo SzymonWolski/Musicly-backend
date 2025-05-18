@@ -345,4 +345,84 @@ router.delete('/delete/:utworId', async (req: Request<{utworId: string}>, res: R
   }
 });
 
+// Endpoint do odtwarzania plików audio
+router.get('/play/:utworId', async (req: Request<{utworId: string}>, res: Response): Promise<void> => {
+  try {
+    const { utworId } = req.params;
+    const id = parseInt(utworId);
+    
+    // Pobierz informacje o utworze z bazy danych
+    const result = await sql`
+      SELECT filepath, filename, mimetype
+      FROM "Utwor"
+      WHERE "ID_utworu" = ${id}
+    `;
+    
+    if (result.length === 0 || !result[0].filepath) {
+      res.status(404).json({ 
+        success: false,
+        message: 'Utwór nie istnieje lub nie ma powiązanego pliku' 
+      });
+      return;
+    }
+    
+    const utwor = result[0];
+    const filePath = utwor.filepath;
+    
+    // Sprawdzamy, czy plik istnieje
+    if (!fs.existsSync(filePath)) {
+      res.status(404).json({ 
+        success: false,
+        message: 'Plik fizyczny nie istnieje'
+      });
+      return;
+    }
+    
+    // Pobierz statystyki pliku dla określenia rozmiaru
+    const stat = fs.statSync(filePath);
+    
+    // Pobierz zakres bajtów, jeśli klient go żąda (do streamowania)
+    const range = req.headers.range;
+    
+    if (range) {
+      // Parsuj zakres bajtów
+      const parts = range.replace(/bytes=/, '').split('-');
+      const start = parseInt(parts[0], 10);
+      const end = parts[1] ? parseInt(parts[1], 10) : stat.size - 1;
+      const chunkSize = (end - start) + 1;
+      
+      // Utwórz strumień odczytu pliku
+      const fileStream = fs.createReadStream(filePath, { start, end });
+      
+      // Ustaw odpowiednie nagłówki dla streamowanego zakresu
+      res.writeHead(206, {
+        'Content-Range': `bytes ${start}-${end}/${stat.size}`,
+        'Accept-Ranges': 'bytes',
+        'Content-Length': chunkSize,
+        'Content-Type': utwor.mimetype || 'audio/mpeg',
+      });
+      
+      // Stream pliku do klienta
+      fileStream.pipe(res);
+    } else {
+      // Jeśli zakres nie jest określony, wyślij cały plik
+      res.writeHead(200, {
+        'Content-Length': stat.size,
+        'Content-Type': utwor.mimetype || 'audio/mpeg',
+        'Accept-Ranges': 'bytes',
+      });
+      
+      const fileStream = fs.createReadStream(filePath);
+      fileStream.pipe(res);
+    }
+    
+  } catch (error) {
+    console.error('Błąd podczas streamowania pliku audio:', error);
+    res.status(500).json({ 
+      success: false,
+      message: 'Błąd serwera podczas streamowania pliku audio' 
+    });
+  }
+});
+
 export default router;
