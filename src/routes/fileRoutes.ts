@@ -137,69 +137,6 @@ router.post('/upload', upload.single('file'), async (req: RequestWithFile, res: 
   }
 });
 
-// Endpoint do pobierania plików po ID utworu
-router.get('/download/:utworId', async (req: Request<{utworId: string}>, res: Response): Promise<void> => {
-  try {
-    const { utworId } = req.params;
-    
-    // Pobierz informacje o utworze z bazy danych
-    const result = await sql`
-      SELECT * FROM "Utwor" WHERE "ID_utworu" = ${parseInt(utworId)}
-    `;
-    
-    if (result.length === 0 || !result[0].filepath) {
-      res.status(404).json({ message: 'Utwór nie istnieje lub nie ma powiązanego pliku' });
-      return;
-    }
-    
-    const utwor = result[0];
-    const filePath = utwor.filepath;
-    
-    // Sprawdzamy, czy plik istnieje
-    if (!fs.existsSync(filePath)) {
-      res.status(404).json({ message: 'Plik fizyczny nie istnieje' });
-      return;
-    }
-    
-    // Wysyłamy plik z oryginalną nazwą
-    res.download(filePath, utwor.nazwa_utworu + path.extname(utwor.filename));
-  } catch (error) {
-    console.error('Błąd podczas pobierania utworu:', error);
-    res.status(500).json({ message: 'Błąd serwera podczas pobierania pliku' });
-  }
-});
-
-// Endpoint do pobierania plików po nazwie pliku (dla kompatybilności)
-router.get('/download/by-filename/:filename', async (req: Request<{filename: string}>, res: Response): Promise<void> => {
-  try {
-    const { filename } = req.params;
-    
-    // Pobierz informacje o utworze z bazy danych
-    const result = await sql`
-      SELECT * FROM "Utwor" WHERE filename = ${filename}
-    `;
-    
-    if (result.length === 0 || !result[0].filepath) {
-      res.status(404).json({ message: 'Utwór nie istnieje lub nie ma powiązanego pliku' });
-      return;
-    }
-    
-    const utwor = result[0];
-    
-    // Sprawdzamy, czy plik istnieje
-    if (!fs.existsSync(utwor.filepath)) {
-      res.status(404).json({ message: 'Plik fizyczny nie istnieje' });
-      return;
-    }
-    
-    // Wysyłamy plik
-    res.download(utwor.filepath, utwor.nazwa_utworu + path.extname(utwor.filename));
-  } catch (error) {
-    console.error('Błąd podczas pobierania utworu:', error);
-    res.status(500).json({ message: 'Błąd serwera podczas pobierania pliku' });
-  }
-});
-
 interface Utwor {
   ID_utworu: number;
   nazwa_utworu: string;
@@ -213,16 +150,18 @@ interface Utwor {
   kryptonim_artystyczny: string;
 }
 
-// Endpoint do listowania utworów
-router.get('/list', async (_req: Request, res: Response): Promise<void> => {
+// Endpoint do listowania utworów - obsługuje GET i POST dla wyszukiwania
+router.get('/list', async (req: Request, res: Response): Promise<void> => {
   try {
-    // Pobierz utwory z informacjami o autorze
-    const utwory = await sql`
+    // Sprawdź czy są parametry wyszukiwania w query string
+    const searchQuery = req.query.search as string | undefined;
+    
+    // Podstawowe zapytanie
+    let query = `
       SELECT 
         u."ID_utworu", 
         u.nazwa_utworu, 
         u.data_wydania, 
-        u.czas_trwania, 
         u.filename, 
         u.mimetype, 
         u.filesize,
@@ -231,15 +170,29 @@ router.get('/list', async (_req: Request, res: Response): Promise<void> => {
         a.kryptonim_artystyczny
       FROM "Utwor" u
       JOIN "Autorzy" a ON u."ID_autora" = a."ID_autora"
-      ORDER BY u."ID_utworu" DESC
     `;
     
+    // Jeśli podano parametr wyszukiwania, dodaj warunek WHERE
+    let params = [];
+    if (searchQuery) {
+      query += ` 
+        WHERE LOWER(u.nazwa_utworu) LIKE LOWER($1)
+        OR LOWER(a.kryptonim_artystyczny) LIKE LOWER($1)
+      `;
+      params.push(`%${searchQuery}%`);
+    }
+    
+    // Dodaj sortowanie
+    query += ` ORDER BY u."ID_utworu" DESC`;
+    
+    // Wykonaj zapytanie
+    const utwory = await sql.unsafe(query, params);
+    
     // Przekształć wyniki do oczekiwanego formatu
-    const formattedUtwory = utwory.map((utwor: Utwor) => ({
+    const formattedUtwory = utwory.map((utwor: any) => ({
       ID_utworu: utwor.ID_utworu,
       nazwa_utworu: utwor.nazwa_utworu,
       data_wydania: utwor.data_wydania,
-      czas_trwania: utwor.czas_trwania,
       filename: utwor.filename,
       mimetype: utwor.mimetype,
       filesize: utwor.filesize,
@@ -250,10 +203,76 @@ router.get('/list', async (_req: Request, res: Response): Promise<void> => {
       }
     }));
     
-    res.json({ utwory: formattedUtwory });
+    res.json({ 
+      success: true,
+      utwory: formattedUtwory 
+    });
   } catch (error) {
     console.error('Błąd podczas listowania utworów:', error);
-    res.status(500).json({ message: 'Błąd serwera podczas listowania utworów' });
+    res.status(500).json({ 
+      success: false,
+      message: 'Błąd serwera podczas listowania utworów' 
+    });
+  }
+});
+
+// Dodatkowy endpoint POST dla wyszukiwania utworów
+router.post('/list', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { searchQuery } = req.body;
+    
+    let query = `
+      SELECT 
+        u."ID_utworu", 
+        u.nazwa_utworu, 
+        u.data_wydania, 
+        u.filename, 
+        u.mimetype, 
+        u.filesize,
+        a.imie, 
+        a.nazwisko, 
+        a.kryptonim_artystyczny
+      FROM "Utwor" u
+      JOIN "Autorzy" a ON u."ID_autora" = a."ID_autora"
+    `;
+    
+    let params = [];
+    if (searchQuery && searchQuery.trim() !== '') {
+      query += `
+        WHERE LOWER(u.nazwa_utworu) LIKE LOWER($1)
+        OR LOWER(a.kryptonim_artystyczny) LIKE LOWER($1)
+      `;
+      params.push(`%${searchQuery}%`);
+    }
+    
+    query += ` ORDER BY u."ID_utworu" DESC`;
+    
+    const utwory = await sql.unsafe(query, params);
+    
+    const formattedUtwory = utwory.map((utwor: any) => ({
+      ID_utworu: utwor.ID_utworu,
+      nazwa_utworu: utwor.nazwa_utworu,
+      data_wydania: utwor.data_wydania,
+      filename: utwor.filename,
+      mimetype: utwor.mimetype,
+      filesize: utwor.filesize,
+      Autor: {
+        imie: utwor.imie,
+        nazwisko: utwor.nazwisko,
+        kryptonim_artystyczny: utwor.kryptonim_artystyczny
+      }
+    }));
+    
+    res.json({ 
+      success: true,
+      utwory: formattedUtwory 
+    });
+  } catch (error) {
+    console.error('Błąd podczas wyszukiwania utworów:', error);
+    res.status(500).json({ 
+      success: false,
+      message: 'Błąd serwera podczas wyszukiwania utworów' 
+    });
   }
 });
 
@@ -263,13 +282,19 @@ router.delete('/delete/:utworId', async (req: Request<{utworId: string}>, res: R
     const { utworId } = req.params;
     const id = parseInt(utworId);
     
-    // Pobierz informacje o utworze z bazy danych
+    // Pobierz informacje o utworze z bazy danych wraz z danymi autora
     const result = await sql`
-      SELECT * FROM "Utwor" WHERE "ID_utworu" = ${id}
+      SELECT u.*, a.imie, a.nazwisko, a.kryptonim_artystyczny  
+      FROM "Utwor" u
+      LEFT JOIN "Autorzy" a ON u."ID_autora" = a."ID_autora"
+      WHERE u."ID_utworu" = ${id}
     `;
     
     if (result.length === 0) {
-      res.status(404).json({ message: 'Utwór nie istnieje' });
+      res.status(404).json({ 
+        success: false, 
+        message: 'Utwór nie istnieje' 
+      });
       return;
     }
     
@@ -280,32 +305,43 @@ router.delete('/delete/:utworId', async (req: Request<{utworId: string}>, res: R
       fs.unlinkSync(utwor.filepath);
     }
     
-    // Usuń powiązane rekordy w innych tabelach (w tej samej transakcji)
-    // Najpierw usuń zależne rekordy
-    await sql`BEGIN`;
-    try {
+    // Użyj sql.begin zamiast BEGIN/COMMIT bezpośrednio
+    await sql.begin(async (transaction) => {
       // Usuń numeracje utworu
-      await sql`DELETE FROM "Numeracja_utworu" WHERE "ID_utworu" = ${id}`;
+      await transaction`DELETE FROM "Numeracja_utworu" WHERE "ID_utworu" = ${id}`;
       
       // Usuń powiązania z playlistami
-      await sql`DELETE FROM "PlaylistaUtwor" WHERE "ID_utworu" = ${id}`;
+      await transaction`DELETE FROM "PlaylistaUtwor" WHERE "ID_utworu" = ${id}`;
       
       // Usuń polubienia
-      await sql`DELETE FROM "Polubienia" WHERE "ID_piosenki" = ${id}`;
+      await transaction`DELETE FROM "Polubienia" WHERE "ID_piosenki" = ${id}`;
       
       // Na koniec usuń sam utwór
-      await sql`DELETE FROM "Utwor" WHERE "ID_utworu" = ${id}`;
-      
-      await sql`COMMIT`;
-    } catch (error) {
-      await sql`ROLLBACK`;
-      throw error;
-    }
+      await transaction`DELETE FROM "Utwor" WHERE "ID_utworu" = ${id}`;
+    });
     
-    res.json({ message: 'Utwór został pomyślnie usunięty' });
+    // Zwróć sukces wraz z informacją o usuniętym utworze
+    res.json({
+      success: true,
+      message: 'Piosenka została pomyślnie usunięta',
+      data: {
+        ID_utworu: utwor.ID_utworu,
+        nazwa_utworu: utwor.nazwa_utworu,
+        data_wydania: utwor.data_wydania,
+        Autor: {
+          imie: utwor.imie,
+          nazwisko: utwor.nazwisko,
+          kryptonim_artystyczny: utwor.kryptonim_artystyczny
+        }
+      }
+    });
   } catch (error) {
     console.error('Błąd podczas usuwania utworu:', error);
-    res.status(500).json({ message: 'Błąd serwera podczas usuwania utworu' });
+    res.status(500).json({ 
+      success: false, 
+      message: 'Wystąpił błąd podczas usuwania piosenki. Spróbuj ponownie później.',
+      error: (error instanceof Error) ? error.message : 'Nieznany błąd'  
+    });
   }
 });
 
