@@ -28,12 +28,10 @@ model Autorzy {
 
 model Utwor {
   ID_utworu    Int              @id @default(autoincrement())
-  czas_trwania Int
   data_wydania String
   ID_autora    Int
   nazwa_utworu String
   
-  // Nowe pola dla pliku
   filename     String?
   filepath     String?
   mimetype     String? 

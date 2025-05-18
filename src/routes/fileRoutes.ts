@@ -52,65 +52,77 @@ router.post('/upload', upload.single('file'), async (req: RequestWithFile, res: 
     }
 
     // Sprawdź czy wszystkie wymagane dane są przesłane
-    const { nazwa_utworu, data_wydania /*, ID_autora */} = req.body;
+    const { nazwa_utworu, data_wydania, kryptonim_artystyczny } = req.body;
     
-    // Commented out validation for database fields since we're just testing file upload
-    /*
-    if (!nazwa_utworu || !data_wydania) {
+    if (!nazwa_utworu || !data_wydania || !kryptonim_artystyczny) {
       // Usuń plik jeśli nie ma wszystkich danych
       fs.unlinkSync(path.join('/app/uploads', req.file.filename));
       res.status(400).json({ message: 'Brakuje wymaganych danych utworu' });
       return;
     }
-    */
+    
+    // Sprawdź czy autor istnieje
+    let autorId;
+    const autorResult = await sql`
+      SELECT "ID_autora" FROM "Autorzy" 
+      WHERE kryptonim_artystyczny = ${kryptonim_artystyczny}
+    `;
+    
+    if (autorResult.length === 0) {
+      // Autor nie istnieje, stwórz nowego
+      const nowyAutorResult = await sql`
+        INSERT INTO "Autorzy" (imie, nazwisko, kryptonim_artystyczny)
+        VALUES ('', '', ${kryptonim_artystyczny})
+        RETURNING "ID_autora"
+      `;
+      autorId = nowyAutorResult[0].ID_autora;
+    } else {
+      // Autor istnieje
+      autorId = autorResult[0].ID_autora;
+    }
 
     // Pobierz czas trwania pliku audio automatycznie
     const filePath = path.join('/app/uploads', req.file.filename);
     const metadata = await musicMetadata.parseFile(filePath);
-    
-    // Czas trwania w sekundach - zaokrąglony do pełnych sekund
-    const czas_trwania = Math.round(metadata.format.duration || 0);
 
-    // Commented out SQL operations for testing file upload only
-    /*
-    // Zapisz informacje o utworze w bazie danych używając SQL
+    // Zapisz informacje o utworze w bazie danych używając SQL, dopasowane do schematu tabeli
     const result = await sql`
       INSERT INTO "Utwor" (
-        nazwa_utworu, 
-        czas_trwania, 
-        data_wydania, 
-        "ID_autora", 
-        filename, 
-        filepath, 
-        mimetype, 
+        nazwa_utworu,
+        data_wydania,
+        "ID_autora",
+        filename,
+        filepath,
+        mimetype,
         filesize
       ) VALUES (
-        ${nazwa_utworu || ''}, 
-        ${czas_trwania}, 
-        ${data_wydania || ''}, 
-        ${0}, 
-        ${req.file.filename || ''}, 
-        ${`/app/uploads/${req.file.filename}` || ''}, 
-        ${req.file.mimetype || ''}, 
-        ${req.file.size || 0}
+        ${nazwa_utworu || ''},
+        ${data_wydania || ''},
+        ${autorId}, 
+        ${req.file.filename || null},
+        ${`/app/uploads/${req.file.filename}` || null},
+        ${req.file.mimetype || null},
+        ${req.file.size || null}
       )
-      RETURNING "ID_utworu", nazwa_utworu, czas_trwania, data_wydania, "ID_autora", 
+      RETURNING "ID_utworu", nazwa_utworu, data_wydania, "ID_autora", 
                filename, filepath, mimetype, filesize
     `;
     
     const utwor = result[0];
-    */
     
-    // Return file information directly without database data
+    // Pobierz informacje o autorze do odpowiedzi
+    const autorInfo = await sql`
+      SELECT imie, nazwisko, kryptonim_artystyczny
+      FROM "Autorzy"
+      WHERE "ID_autora" = ${autorId}
+    `;
+    
+    // Zwracamy informacje o przesłanym utworu wraz z informacją o autorze
     res.status(201).json({
-      message: 'Plik przesłany pomyślnie (tylko test zapisu pliku)',
-      file: {
-        filename: req.file.filename,
-        originalName: req.file.originalname,
-        filepath: `/app/uploads/${req.file.filename}`,
-        mimetype: req.file.mimetype,
-        filesize: req.file.size,
-        duration: czas_trwania
+      message: 'Utwór przesłany pomyślnie',
+      utwor: {
+        ...utwor,
+        autor: autorInfo[0]
       }
     });
   } catch (error) {
