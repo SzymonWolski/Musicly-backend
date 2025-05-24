@@ -15,6 +15,10 @@ model Uzytkownik {
   isAdmin       Boolean     @default(false)
   Polubienia    Polubienia[]
   Playlisty     Playlista[]
+  
+  // Nowe relacje dla funkcji znajomych
+  WyslaneProsbyZnajomych    Znajomi[] @relation("wyslaneProsbyZnajomych")
+  OtrzymaneProsbyZnajomych  Znajomi[] @relation("otrzymaneProsbyZnajomych")
 }
 
 model Autorzy {
@@ -90,4 +94,17 @@ model PlaylistaUtwor {
   Utwor        Utwor     @relation(fields: [ID_utworu], references: [ID_utworu])
 
   @@id([ID_playlisty, ID_utworu])
+}
+
+model Znajomi {
+  ID_znajomych    Int       @id @default(autoincrement())
+  ID_uzytkownik1  Int       // Użytkownik, który wysłał zaproszenie
+  ID_uzytkownik2  Int       // Użytkownik, który otrzymał zaproszenie
+  status          String    @default("pending") // pending, accepted, rejected
+  data_dodania    DateTime  @default(now())
+  
+  Uzytkownik1     Uzytkownik @relation("wyslaneProsbyZnajomych", fields: [ID_uzytkownik1], references: [ID_uzytkownik])
+  Uzytkownik2     Uzytkownik @relation("otrzymaneProsbyZnajomych", fields: [ID_uzytkownik2], references: [ID_uzytkownik])
+  
+  @@unique([ID_uzytkownik1, ID_uzytkownik2])
 }

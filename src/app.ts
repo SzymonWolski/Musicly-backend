@@ -9,6 +9,7 @@ import { fileURLToPath } from 'url';
 import { generateSwagger } from './autogen';
 import * as Routes from './routes';
 
+
 // import authRoutes from './routers/authRoutes';
 
 //swager opcje
@@ -29,38 +30,7 @@ app.use(cors());
 app.use(express.json());
 app.use('/docs', swaggerUi.serve, swaggerUi.setup(swaggerDocument));
 
-//logowanie i rejestracja
-//app.use('/auth', authRoutes);
-
-// Zabezpieczone trasy
-//app.get('/auth', authenticateToken, async (req, res) => {
-  //res.json(req.user);
-//});
-
-// app.get('/api/users', async (req, res) => {
-//   const users = await prisma.user.findMany();
-//   const sanitizedUsers = users.map((user) => ({
-//     ...user,
-//     id: Number(user.id),
-//   }));
-//   res.json(sanitizedUsers);
-// });
-
-// app.get('/hello', (req, res) => {
-//   res.json({ message: 'Hello World' });
-// });
-
-// app.post('/api/users', async (req, res) => {
-//   const { email } = req.body;
-//   const user = await prisma.user.create({
-//     data: {
-//       email,
-//     },
-//   });
-//   res.json(user);
-// });
-
 app.use('/auth', Routes.authRoutes);
-app.use('/files', Routes.fileRoutes); // Add file routes connection
-
+app.use('/files', Routes.fileRoutes);
+app.use('/friends', Routes.friendRoutes);
 export default app;
