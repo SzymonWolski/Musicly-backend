@@ -1,13 +1,17 @@
 import { Request, Response } from 'express';
 import { Router } from 'express';
 import { sql } from 'bun';
+import { authenticate } from '../middleware/authMiddleware';
 
 const router = Router();
+
+// Apply authentication middleware to all friend routes
+router.use(authenticate);
 
 // Get all friendships for the logged in user
 router.get('/list', async (req: Request, res: Response): Promise<void> => {
   try {
-    const userId = res.locals.userId; // From auth middleware
+    const userId = req.userId || res.locals.userId; // From auth middleware
     
     // Fetch all friendships where the user is either party
     const friendships = await sql`
@@ -62,8 +66,6 @@ router.get('/search', async (req: Request, res: Response): Promise<void> => {
     const trimmedQuery = query.trim();
     const searchPattern = `%${trimmedQuery}%`;
     
-    console.log('Search pattern:', searchPattern);
-    
     const users = await sql`
       SELECT "ID_uzytkownik", nick, email
       FROM "Uzytkownik"
@@ -73,7 +75,6 @@ router.get('/search', async (req: Request, res: Response): Promise<void> => {
       )
     `;
     
-    console.log("Results found:", users.length);
     res.status(200).json({ users });
     return;
   } catch (error) {
@@ -116,17 +117,32 @@ router.post('/request', async (req: Request, res: Response): Promise<void> => {
     
     // Check if friendship already exists
     const existingFriendship = await sql`
-      SELECT "ID_znajomych", status FROM "Znajomi"
+      SELECT "ID_znajomych", status, "ID_uzytkownik1", "ID_uzytkownik2" 
+      FROM "Znajomi"
       WHERE ("ID_uzytkownik1" = ${senderId} AND "ID_uzytkownik2" = ${Number(recipientId)})
       OR ("ID_uzytkownik1" = ${Number(recipientId)} AND "ID_uzytkownik2" = ${senderId})
     `;
     
     if (existingFriendship.length > 0) {
-      if (existingFriendship[0].status === 'accepted') {
+      const friendship = existingFriendship[0];
+      
+      if (friendship.status === 'accepted') {
         res.status(400).json({ error: 'Jesteście już znajomymi' });
         return;
-      } else {
-        res.status(400).json({ error: 'Zaproszenie została już wysłana' });
+      } else if (friendship.status === 'pending') {
+        // Determine if this is an incoming or outgoing request
+        if (friendship.ID_uzytkownik1 === senderId) {
+          res.status(400).json({ 
+            error: 'Wysłałeś już zaproszenie do tego użytkownika',
+            status: 'outgoing'
+          });
+        } else {
+          res.status(400).json({ 
+            error: 'Ten użytkownik już wysłał Ci zaproszenie. Sprawdź otrzymane zaproszenia.',
+            status: 'incoming',
+            friendshipId: friendship.ID_znajomych
+          });
+        }
         return;
       }
     }
