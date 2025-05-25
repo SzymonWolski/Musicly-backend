@@ -53,20 +53,21 @@ router.get('/list', async (req: Request, res: Response): Promise<void> => {
 router.get('/search', async (req: Request, res: Response): Promise<void> => {
   try {
     const { query } = req.query;
-    const userId = res.locals.userId;
-    
+
     if (!query || typeof query !== 'string') {
       res.status(400).json({ error: 'Wyszukiwana fraza jest wymagana' });
       return;
     }
     
-    const searchPattern = `%${query}%`;
+    const trimmedQuery = query.trim();
+    const searchPattern = `%${trimmedQuery}%`;
+    
+    console.log('Search pattern:', searchPattern);
     
     const users = await sql`
       SELECT "ID_uzytkownik", nick, email
       FROM "Uzytkownik"
-      WHERE ("ID_uzytkownik" != ${userId})
-      AND (
+      WHERE (
         LOWER(nick) LIKE LOWER(${searchPattern}) OR
         LOWER(email) LIKE LOWER(${searchPattern})
       )
