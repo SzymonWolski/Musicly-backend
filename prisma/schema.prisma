@@ -16,9 +16,13 @@ model Uzytkownik {
   Polubienia    Polubienia[]
   Playlisty     Playlista[]
   
-  // Nowe relacje dla funkcji znajomych
+  // Relacje dla funkcji znajomych
   WyslaneProsbyZnajomych    Znajomi[] @relation("wyslaneProsbyZnajomych")
   OtrzymaneProsbyZnajomych  Znajomi[] @relation("otrzymaneProsbyZnajomych")
+
+  // Relacje dla wiadomości
+  WyslaneWiadomosci         Wiadomosci[] @relation("wyslaneWiadomosci")
+  OtrzymaneWiadomosci       Wiadomosci[] @relation("otrzymaneWiadomosci")
 }
 
 model Autorzy {
@@ -108,3 +112,16 @@ model Znajomi {
   
   @@unique([ID_uzytkownik1, ID_uzytkownik2])
 }
+
+model Wiadomosci {
+  ID_wiadomosci   Int       @id @default(autoincrement())
+  ID_nadawca      Int       // Użytkownik, który wysłał wiadomość
+  ID_odbiorca     Int       // Użytkownik, który otrzymał wiadomość
+  tresc           String    // Treść wiadomości
+  data_wyslania   DateTime  @default(now())
+  przeczytana     Boolean   @default(false)
+  
+  Nadawca         Uzytkownik @relation("wyslaneWiadomosci", fields: [ID_nadawca], references: [ID_uzytkownik])
+  Odbiorca        Uzytkownik @relation("otrzymaneWiadomosci", fields: [ID_odbiorca], references: [ID_uzytkownik]) 
+
+}  

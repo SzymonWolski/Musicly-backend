@@ -33,4 +33,5 @@ app.use('/docs', swaggerUi.serve, swaggerUi.setup(swaggerDocument));
 app.use('/auth', Routes.authRoutes);
 app.use('/files', Routes.fileRoutes);
 app.use('/friends', Routes.friendRoutes);
+app.use('/messages', Routes.messageRoutes);
 export default app;
