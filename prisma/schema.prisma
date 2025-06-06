@@ -48,7 +48,6 @@ model Utwor {
   Autor        Autorzy          @relation(fields: [ID_autora], references: [ID_autora])
   Polubienia   Polubienia[]
   Numeracja    Numeracja_utworu?
-  Playlisty    Playlista[]
   PlaylistaUtwor PlaylistaUtwor[]
 }
 
@@ -86,7 +85,6 @@ model Playlista {
 
   Uzytkownik      Uzytkownik @relation(fields: [ID_uzytkownik], references: [ID_uzytkownik])
   Utwory          PlaylistaUtwor[]
-  Utwor           Utwor[]
 }
 
 model PlaylistaUtwor {
@@ -124,4 +122,4 @@ model Wiadomosci {
   Nadawca         Uzytkownik @relation("wyslaneWiadomosci", fields: [ID_nadawca], references: [ID_uzytkownik])
   Odbiorca        Uzytkownik @relation("otrzymaneWiadomosci", fields: [ID_odbiorca], references: [ID_uzytkownik]) 
 
-}  
+}

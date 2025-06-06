@@ -35,4 +35,5 @@ app.use('/files', Routes.fileRoutes);
 app.use('/friends', Routes.friendRoutes);
 app.use('/messages', Routes.messageRoutes);
 app.use('/favorites', Routes.favoriteRoutes);
+app.use('/playlists', Routes.playlistRoutes);
 export default app;
