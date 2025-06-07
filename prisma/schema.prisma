@@ -123,3 +123,10 @@ model Wiadomosci {
   Odbiorca        Uzytkownik @relation("otrzymaneWiadomosci", fields: [ID_odbiorca], references: [ID_uzytkownik]) 
 
 }
+
+model UtworyLog {
+  ID_log          Int       @id @default(autoincrement())
+  nazwa_utworu    String?   // Nazwa utworu, której dotyczyła akcja
+  akcja           String    // "dodano" lub "usunieto"
+  data_akcji      DateTime  @default(now())
+}

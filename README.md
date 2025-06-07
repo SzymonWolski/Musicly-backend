@@ -184,3 +184,39 @@ bun test --coverage
 ├── tsconfig.json       # Konfiguracja TypeScript
 └── README.md           # Dokumentacja projektu
 ```
+
+Dodanie trigerów dokumentowania zmian w utworach.
+
+```bash
+-- 1. Tworzymy funkcję triggerową
+CREATE OR REPLACE FUNCTION log_utwor_operations()
+RETURNS TRIGGER AS $$
+BEGIN
+    IF (TG_OP = 'DELETE') THEN
+        INSERT INTO "UtworyLog" (nazwa_utworu, akcja)
+        VALUES (OLD.nazwa_utworu, 'usunieto');
+        RETURN OLD;
+    ELSIF (TG_OP = 'INSERT') THEN
+        INSERT INTO "UtworyLog" (nazwa_utworu, akcja)
+        VALUES (NEW.nazwa_utworu, 'dodano');
+        RETURN NEW;
+    END IF;
+    RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+-- 2. Tworzymy triggery dla tabeli z utworami
+--    Jeśli Twoja tabela ma inną nazwę, zmień 'Utwory' na właściwą nazwę
+
+-- Trigger dla INSERT
+CREATE OR REPLACE TRIGGER utwor_added
+AFTER INSERT ON "Utwor"
+FOR EACH ROW
+EXECUTE FUNCTION log_utwor_operations();
+
+-- Trigger dla DELETE
+CREATE OR REPLACE TRIGGER utwor_deleted
+AFTER DELETE ON "Utwor"
+FOR EACH ROW
+EXECUTE FUNCTION log_utwor_operations();
+```
