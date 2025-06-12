@@ -47,7 +47,7 @@ interface RequestWithFile extends Request {
 router.post('/upload', upload.single('file'), async (req: RequestWithFile, res: Response): Promise<void> => {
   try {
     if (!req.file) {
-      res.status(400).json({ message: 'Nie przesłano pliku audio' });
+      res.status(400).json({ success: false, message: 'Nie przesłano pliku audio' });
       return;
     }
 
@@ -57,7 +57,7 @@ router.post('/upload', upload.single('file'), async (req: RequestWithFile, res: 
     if (!nazwa_utworu || !data_wydania || !kryptonim_artystyczny) {
       // Usuń plik jeśli nie ma wszystkich danych
       fs.unlinkSync(path.join('/app/uploads', req.file.filename));
-      res.status(400).json({ message: 'Brakuje wymaganych danych utworu' });
+      res.status(400).json({ success: false, message: 'Brakuje wymaganych danych utworu' });
       return;
     }
     
@@ -118,7 +118,8 @@ router.post('/upload', upload.single('file'), async (req: RequestWithFile, res: 
     `;
     
     // Zwracamy informacje o przesłanym utworu wraz z informacją o autorze
-    res.status(201).json({
+    res.status(200).json({
+      success: true,
       message: 'Utwór przesłany pomyślnie',
       utwor: {
         ...utwor,
@@ -133,7 +134,10 @@ router.post('/upload', upload.single('file'), async (req: RequestWithFile, res: 
       fs.unlinkSync(path.join('/app/uploads', req.file.filename));
     }
     
-    res.status(500).json({ message: 'Błąd serwera podczas przesyłania pliku' });
+    res.status(500).json({ 
+      success: false, 
+      message: 'Błąd serwera podczas przesyłania pliku' 
+    });
   }
 });
 
@@ -305,7 +309,6 @@ router.delete('/delete/:utworId', async (req: Request<{utworId: string}>, res: R
       fs.unlinkSync(utwor.filepath);
     }
     
-    // Użyj sql.begin zamiast BEGIN/COMMIT bezpośrednio
     await sql.begin(async (transaction) => {
       // Usuń numeracje utworu
       await transaction`DELETE FROM "Numeracja_utworu" WHERE "ID_utworu" = ${id}`;
