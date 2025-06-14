@@ -220,3 +220,84 @@ AFTER DELETE ON "Utwor"
 FOR EACH ROW
 EXECUTE FUNCTION log_utwor_operations();
 ```
+
+Procedura zapraszania użytkowników do przyjaciół.
+
+
+Wysyłanie zaproszeń:
+```bash
+CREATE OR REPLACE PROCEDURE friend_req(
+    sender_id INT, 
+    recipient_id INT, 
+    OUT status_code INT, 
+    OUT message TEXT,
+    OUT friendship_id INT
+)
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    existing_friendship RECORD;
+BEGIN
+    -- Initialize outputs
+    status_code := 200;
+    message := '';
+    friendship_id := NULL;
+    
+    -- Validate input
+    IF recipient_id IS NULL THEN
+        status_code := 400;
+        message := 'ID odbiorcy jest wymagane';
+        RETURN;
+    END IF;
+    
+    IF recipient_id = sender_id THEN
+        status_code := 400;
+        message := 'Nie możesz wysłać zaproszenia do samego siebie';
+        RETURN;
+    END IF;
+    
+    -- Check if recipient exists
+    IF NOT EXISTS (
+        SELECT 1 FROM "Uzytkownik"
+        WHERE "ID_uzytkownik" = recipient_id
+    ) THEN
+        status_code := 404;
+        message := 'Użytkownik nie istnieje';
+        RETURN;
+    END IF;
+    
+    -- Check if friendship already exists
+    SELECT * INTO existing_friendship 
+    FROM "Znajomi"
+    WHERE ("ID_uzytkownik1" = sender_id AND "ID_uzytkownik2" = recipient_id)
+    OR ("ID_uzytkownik1" = recipient_id AND "ID_uzytkownik2" = sender_id);
+    
+    IF FOUND THEN
+        IF existing_friendship.status = 'accepted' THEN
+            status_code := 400;
+            message := 'Jesteście już znajomymi';
+            RETURN;
+        ELSIF existing_friendship.status = 'pending' THEN
+            IF existing_friendship."ID_uzytkownik1" = sender_id THEN
+                status_code := 400;
+                message := 'Wysłałeś już zaproszenie do tego użytkownika';
+                RETURN;
+            ELSE
+                status_code := 400;
+                message := 'Ten użytkownik już wysłał Ci zaproszenie. Sprawdź otrzymane zaproszenia.';
+                friendship_id := existing_friendship."ID_znajomych";
+                RETURN;
+            END IF;
+        END IF;
+    END IF;
+    
+    -- Create a new friend request
+    INSERT INTO "Znajomi" ("ID_uzytkownik1", "ID_uzytkownik2", status)
+    VALUES (sender_id, recipient_id, 'pending')
+    RETURNING "ID_znajomych" INTO friendship_id;
+    
+    status_code := 201;
+    message := 'Zaproszenie zostało wysłane';
+END;
+$$;
+```

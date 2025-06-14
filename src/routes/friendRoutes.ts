@@ -93,68 +93,37 @@ router.post('/request', async (req: Request, res: Response): Promise<void> => {
     const { recipientId } = req.body;
     const senderId = res.locals.userId;
     
-    // Validate input
-    if (!recipientId) {
-      res.status(400).json({ error: 'ID odbiorcy jest wymagane' });
-      return;
-    }
-    
-    if (Number(recipientId) === Number(senderId)) {
-      res.status(400).json({ error: 'Nie możesz wysłać zaproszenia do samego siebie' });
-      return;
-    }
-    
-    // Check if recipient exists
-    const recipient = await sql`
-      SELECT "ID_uzytkownik" FROM "Uzytkownik"
-      WHERE "ID_uzytkownik" = ${Number(recipientId)}
+    const result = await sql`
+      CALL friend_req(${senderId}, ${Number(recipientId)}, NULL, NULL, NULL);
     `;
     
-    if (recipient.length === 0) {
-      res.status(404).json({ error: 'Użytkownik nie istnieje' });
-      return;
-    }
+    // Get the out parameters
+    const status_code = result[0].status_code;
+    const message = result[0].message;
+    const friendship_id = result[0].friendship_id;
     
-    // Check if friendship already exists
-    const existingFriendship = await sql`
-      SELECT "ID_znajomych", status, "ID_uzytkownik1", "ID_uzytkownik2" 
-      FROM "Znajomi"
-      WHERE ("ID_uzytkownik1" = ${senderId} AND "ID_uzytkownik2" = ${Number(recipientId)})
-      OR ("ID_uzytkownik1" = ${Number(recipientId)} AND "ID_uzytkownik2" = ${senderId})
-    `;
-    
-    if (existingFriendship.length > 0) {
-      const friendship = existingFriendship[0];
-      
-      if (friendship.status === 'accepted') {
-        res.status(400).json({ error: 'Jesteście już znajomymi' });
+    if (status_code >= 400) {
+      // If it's a 400 error about an incoming request, include the friendship_id
+      if (message.includes('Ten użytkownik już wysłał Ci zaproszenie')) {
+        res.status(status_code).json({
+          error: message,
+          status: 'incoming',
+          friendshipId: friendship_id
+        });
         return;
-      } else if (friendship.status === 'pending') {
-        // Determine if this is an incoming or outgoing request
-        if (friendship.ID_uzytkownik1 === senderId) {
-          res.status(400).json({ 
-            error: 'Wysłałeś już zaproszenie do tego użytkownika',
-            status: 'outgoing'
-          });
-        } else {
-          res.status(400).json({ 
-            error: 'Ten użytkownik już wysłał Ci zaproszenie. Sprawdź otrzymane zaproszenia.',
-            status: 'incoming',
-            friendshipId: friendship.ID_znajomych
-          });
-        }
+      } else if (message.includes('Wysłałeś już zaproszenie')) {
+        res.status(status_code).json({
+          error: message,
+          status: 'outgoing'
+        });
+        return;
+      } else {
+        res.status(status_code).json({ error: message });
         return;
       }
     }
-    
-    // Create a new friend request
-    const newFriendship = await sql`
-      INSERT INTO "Znajomi" ("ID_uzytkownik1", "ID_uzytkownik2", status)
-      VALUES (${senderId}, ${Number(recipientId)}, 'pending')
-      RETURNING "ID_znajomych"
-    `;
-    
-    res.status(201).json({ success: true, friendshipId: newFriendship[0].ID_znajomych });
+
+    res.status(status_code).json({ success: true, friendshipId: friendship_id });
     return;
   } catch (error) {
     console.error('Error sending friend request:', error);
