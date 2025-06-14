@@ -301,3 +301,13 @@ BEGIN
 END;
 $$;
 ```
+
+Funkcja licząca liczbę polubień indywidualnych piosenek:
+```bash
+CREATE OR REPLACE FUNCTION liczba_polubien(id_utworu INT) 
+RETURNS INT AS $$
+BEGIN
+    RETURN (SELECT COUNT(*) FROM "Polubienia" WHERE "ID_piosenki" = id_utworu);
+END;
+$$ LANGUAGE plpgsql;
+```

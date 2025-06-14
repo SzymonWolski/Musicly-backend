@@ -160,7 +160,7 @@ router.get('/list', async (req: Request, res: Response): Promise<void> => {
     // Sprawdź czy są parametry wyszukiwania w query string
     const searchQuery = req.query.search as string | undefined;
     
-    // Podstawowe zapytanie
+    // Podstawowe zapytanie z dodaną funkcją liczba_polubien
     let query = `
       SELECT 
         u."ID_utworu", 
@@ -171,7 +171,8 @@ router.get('/list', async (req: Request, res: Response): Promise<void> => {
         u.filesize,
         a.imie, 
         a.nazwisko, 
-        a.kryptonim_artystyczny
+        a.kryptonim_artystyczny,
+        liczba_polubien(u."ID_utworu") as likes_count
       FROM "Utwor" u
       JOIN "Autorzy" a ON u."ID_autora" = a."ID_autora"
     `;
@@ -200,6 +201,7 @@ router.get('/list', async (req: Request, res: Response): Promise<void> => {
       filename: utwor.filename,
       mimetype: utwor.mimetype,
       filesize: utwor.filesize,
+      likes_count: Number(utwor.likes_count),
       Autor: {
         imie: utwor.imie,
         nazwisko: utwor.nazwisko,
@@ -235,7 +237,8 @@ router.post('/list', async (req: Request, res: Response): Promise<void> => {
         u.filesize,
         a.imie, 
         a.nazwisko, 
-        a.kryptonim_artystyczny
+        a.kryptonim_artystyczny,
+        liczba_polubien(u."ID_utworu") as likes_count
       FROM "Utwor" u
       JOIN "Autorzy" a ON u."ID_autora" = a."ID_autora"
     `;
@@ -260,6 +263,7 @@ router.post('/list', async (req: Request, res: Response): Promise<void> => {
       filename: utwor.filename,
       mimetype: utwor.mimetype,
       filesize: utwor.filesize,
+      likes_count: Number(utwor.likes_count),
       Autor: {
         imie: utwor.imie,
         nazwisko: utwor.nazwisko,
