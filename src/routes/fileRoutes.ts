@@ -432,4 +432,82 @@ router.get('/play/:utworId', async (req: Request<{utworId: string}>, res: Respon
   }
 });
 
+// Endpoint do aktualizacji danych utworu
+router.put('/update/:utworId', async (req: Request<{utworId: string}>, res: Response): Promise<void> => {
+  try {
+    const { utworId } = req.params;
+    const id = parseInt(utworId);
+    const { nazwa_utworu, data_wydania, kryptonim_artystyczny } = req.body;
+    
+    // Sprawdź czy utwór istnieje
+    const utworExists = await sql`
+      SELECT "ID_utworu", "ID_autora" FROM "Utwor" 
+      WHERE "ID_utworu" = ${id}
+    `;
+    
+    if (utworExists.length === 0) {
+      res.status(404).json({
+        success: false,
+        message: 'Utwór nie istnieje'
+      });
+      return;
+    }
+    
+    const utwor = utworExists[0];
+    
+    // Sprawdź czy autor istnieje lub stwórz nowego jeśli potrzeba
+    let autorId;
+    const autorResult = await sql`
+      SELECT "ID_autora" FROM "Autorzy" 
+      WHERE kryptonim_artystyczny = ${kryptonim_artystyczny}
+    `;
+    
+    if (autorResult.length === 0) {
+      // Autor nie istnieje, stwórz nowego
+      const nowyAutorResult = await sql`
+        INSERT INTO "Autorzy" (imie, nazwisko, kryptonim_artystyczny)
+        VALUES ('', '', ${kryptonim_artystyczny})
+        RETURNING "ID_autora"
+      `;
+      autorId = nowyAutorResult[0].ID_autora;
+    } else {
+      // Autor istnieje
+      autorId = autorResult[0].ID_autora;
+    }
+    
+    // Aktualizuj utwór w bazie danych
+    const updatedUtwor = await sql`
+      UPDATE "Utwor" SET
+        nazwa_utworu = ${nazwa_utworu},
+        data_wydania = ${data_wydania},
+        "ID_autora" = ${autorId}
+      WHERE "ID_utworu" = ${id}
+      RETURNING "ID_utworu", nazwa_utworu, data_wydania, "ID_autora"
+    `;
+    
+    // Pobierz zaktualizowane informacje o autorze
+    const autorInfo = await sql`
+      SELECT imie, nazwisko, kryptonim_artystyczny
+      FROM "Autorzy"
+      WHERE "ID_autora" = ${autorId}
+    `;
+    
+    res.status(200).json({
+      success: true,
+      message: 'Utwór zaktualizowany pomyślnie',
+      utwor: {
+        ...updatedUtwor[0],
+        autor: autorInfo[0]
+      }
+    });
+  } catch (error) {
+    console.error('Błąd podczas aktualizacji utworu:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Błąd serwera podczas aktualizacji utworu',
+      error: (error instanceof Error) ? error.message : 'Nieznany błąd'
+    });
+  }
+});
+
 export default router;
