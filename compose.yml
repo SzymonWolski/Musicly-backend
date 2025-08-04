@@ -37,7 +37,10 @@ services:
       # - "1935:1935"
       - "8000:8000"
     volumes:
-      - ../uploads:/app/uploads
+      - ../uploads/songs:/app/uploads/songs
+      - ../uploads/song-images:/app/uploads/song-images
+      - ../uploads/user-images:/app/uploads/user-images
+      - ../uploads/playlist-images:/app/uploads/playlist-images
     networks:
       - backend
 
