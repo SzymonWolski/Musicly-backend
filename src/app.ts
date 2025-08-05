@@ -37,4 +37,5 @@ app.use('/messages', Routes.messageRoutes);
 app.use('/favorites', Routes.favoriteRoutes);
 app.use('/playlists', Routes.playlistRoutes);
 app.use('/users', Routes.users);
+app.use('/profile', Routes.profilepic);
 export default app;

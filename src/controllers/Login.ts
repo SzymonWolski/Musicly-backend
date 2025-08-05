@@ -11,6 +11,7 @@ interface UserData {
   password: string;
   nick: string;
   isadmin: boolean;
+  profileImagePath?: string;
 }
 
 export const login = async (req: Request, res: Response): Promise<void> => {
@@ -29,7 +30,8 @@ export const login = async (req: Request, res: Response): Promise<void> => {
   try {
     // 1. Pobierz użytkownika z bazy danych używając Bun.sql
     const users = await sql`
-      SELECT "ID_uzytkownik" as id, email, haslo as password, "isAdmin" as isadmin, nick  
+      SELECT "ID_uzytkownik" as id, email, haslo as password, "isAdmin" as isadmin, nick, 
+             "profileImagePath" as "profileImagePath"
       FROM "Uzytkownik" 
       WHERE email = ${email}
     `;
@@ -69,10 +71,16 @@ export const login = async (req: Request, res: Response): Promise<void> => {
     // 4. Zwrócenie odpowiedzi
     const { password: _, ...userWithoutPassword } = user;
     
+    // Dodaj domyślne zdjęcie profilowe jeśli użytkownik go nie posiada
+    const userResponse = {
+      ...userWithoutPassword,
+      profileImagePath: user.profileImagePath || '/uploads/user-images/default-profile.jpg'
+    };
+    
     res.json({
       success: true,
       token,
-      user: userWithoutPassword,
+      user: userResponse,
       expiresIn: 3600
     });
 
