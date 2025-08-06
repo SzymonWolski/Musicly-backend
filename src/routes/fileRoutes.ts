@@ -6,16 +6,28 @@ import fs from 'fs';
 import { v4 as uuidv4 } from 'uuid';
 import { sql } from 'bun';
 import * as musicMetadata from 'music-metadata';
+import sharp from 'sharp';
 
 const router = Router();
 
-// Konfiguracja multer dla przechowywania plików
-const storage = multer.diskStorage({
+// Konfiguracja multer dla przechowywania plików audio
+const audioStorage = multer.diskStorage({
   destination: (_req: Request, _file: Express.Multer.File, cb: (error: Error | null, destination: string) => void) => {
-    cb(null, '/app/uploads');
+    cb(null, '/app/uploads/songs');
   },
   filename: (_req: Request, file: Express.Multer.File, cb: (error: Error | null, filename: string) => void) => {
-    // Generowanie unikalnej nazwy pliku z zachowaniem oryginalnego rozszerzenia
+    const fileExt = path.extname(file.originalname);
+    const fileName = `${uuidv4()}${fileExt}`;
+    cb(null, fileName);
+  }
+});
+
+// Konfiguracja multer dla przechowywania obrazów
+const imageStorage = multer.diskStorage({
+  destination: (_req: Request, _file: Express.Multer.File, cb: (error: Error | null, destination: string) => void) => {
+    cb(null, '/app/uploads/song-images');
+  },
+  filename: (_req: Request, file: Express.Multer.File, cb: (error: Error | null, filename: string) => void) => {
     const fileExt = path.extname(file.originalname);
     const fileName = `${uuidv4()}${fileExt}`;
     cb(null, fileName);
@@ -23,8 +35,7 @@ const storage = multer.diskStorage({
 });
 
 // Filtr plików - akceptowanie tylko plików audio
-const fileFilter = (_req: Request, file: Express.Multer.File, cb: multer.FileFilterCallback) => {
-  // Sprawdź czy plik jest plikiem audio
+const audioFileFilter = (_req: Request, file: Express.Multer.File, cb: multer.FileFilterCallback) => {
   if (file.mimetype.startsWith('audio/')) {
     cb(null, true);
   } else {
@@ -32,10 +43,25 @@ const fileFilter = (_req: Request, file: Express.Multer.File, cb: multer.FileFil
   }
 };
 
-const upload = multer({ 
-  storage,
-  fileFilter,
+// Filtr plików - akceptowanie tylko obrazów
+const imageFileFilter = (_req: Request, file: Express.Multer.File, cb: multer.FileFilterCallback) => {
+  if (file.mimetype.startsWith('image/')) {
+    cb(null, true);
+  } else {
+    cb(new Error('Tylko pliki obrazów są dozwolone'));
+  }
+};
+
+const audioUpload = multer({ 
+  storage: audioStorage,
+  fileFilter: audioFileFilter,
   limits: { fileSize: 50 * 1024 * 1024 } // Limit 50MB dla plików audio
+});
+
+const imageUpload = multer({ 
+  storage: imageStorage,
+  fileFilter: imageFileFilter,
+  limits: { fileSize: 10 * 1024 * 1024 } // Limit 10MB dla obrazów
 });
 
 // Typowanie dla req.file
@@ -44,7 +70,7 @@ interface RequestWithFile extends Request {
 }
 
 // Endpoint do przesyłania plików audio jako utwory muzyczne
-router.post('/upload', upload.single('file'), async (req: RequestWithFile, res: Response): Promise<void> => {
+router.post('/upload', audioUpload.single('file'), async (req: RequestWithFile, res: Response): Promise<void> => {
   try {
     if (!req.file) {
       res.status(400).json({ success: false, message: 'Nie przesłano pliku audio' });
@@ -56,7 +82,7 @@ router.post('/upload', upload.single('file'), async (req: RequestWithFile, res: 
     
     if (!nazwa_utworu || !data_wydania || !kryptonim_artystyczny) {
       // Usuń plik jeśli nie ma wszystkich danych
-      fs.unlinkSync(path.join('/app/uploads', req.file.filename));
+      fs.unlinkSync(path.join('/app/uploads/songs', req.file.filename));
       res.status(400).json({ success: false, message: 'Brakuje wymaganych danych utworu' });
       return;
     }
@@ -82,7 +108,7 @@ router.post('/upload', upload.single('file'), async (req: RequestWithFile, res: 
     }
 
     // Pobierz czas trwania pliku audio automatycznie
-    const filePath = path.join('/app/uploads', req.file.filename);
+    const filePath = path.join('/app/uploads/songs', req.file.filename);
     const metadata = await musicMetadata.parseFile(filePath);
 
     // Zapisz informacje o utworze w bazie danych używając SQL, dopasowane do schematu tabeli
@@ -100,7 +126,7 @@ router.post('/upload', upload.single('file'), async (req: RequestWithFile, res: 
         ${data_wydania || ''},
         ${autorId}, 
         ${req.file.filename || null},
-        ${`/app/uploads/${req.file.filename}` || null},
+        ${`/app/uploads/songs/${req.file.filename}` || null},
         ${req.file.mimetype || null},
         ${req.file.size || null}
       )
@@ -131,7 +157,7 @@ router.post('/upload', upload.single('file'), async (req: RequestWithFile, res: 
     
     // Usuń plik w przypadku błędu
     if (req.file) {
-      fs.unlinkSync(path.join('/app/uploads', req.file.filename));
+      fs.unlinkSync(path.join('/app/uploads/songs', req.file.filename));
     }
     
     res.status(500).json({ 
@@ -141,18 +167,172 @@ router.post('/upload', upload.single('file'), async (req: RequestWithFile, res: 
   }
 });
 
-interface Utwor {
-  ID_utworu: number;
-  nazwa_utworu: string;
-  data_wydania: string;
-  czas_trwania: number;
-  filename: string;
-  mimetype: string;
-  filesize: number;
-  imie: string;
-  nazwisko: string;
-  kryptonim_artystyczny: string;
-}
+// Endpoint do przesyłania obrazów utworów
+router.post('/upload-image/:utworId', imageUpload.single('image'), async (req: RequestWithFile, res: Response): Promise<void> => {
+  try {
+    const { utworId } = req.params;
+    const id = parseInt(utworId);
+
+    if (!req.file) {
+      res.status(400).json({ success: false, message: 'Nie przesłano pliku obrazu' });
+      return;
+    }
+
+    // Sprawdź czy utwór istnieje
+    const utworExists = await sql`
+      SELECT "ID_utworu" FROM "Utwor" 
+      WHERE "ID_utworu" = ${id}
+    `;
+    
+    if (utworExists.length === 0) {
+      fs.unlinkSync(path.join('/app/uploads/song-images', req.file.filename));
+      res.status(404).json({
+        success: false,
+        message: 'Utwór nie istnieje'
+      });
+      return;
+    }
+
+    const tempFilePath = path.join('/app/uploads/song-images', req.file.filename);
+    
+    try {
+      // Sprawdź wymiary obrazu i zmień rozmiar jeśli potrzeba
+      const image = sharp(tempFilePath);
+      const metadata = await image.metadata();
+      
+      if (!metadata.width || !metadata.height) {
+        fs.unlinkSync(tempFilePath);
+        res.status(400).json({
+          success: false,
+          message: 'Nie można określić wymiarów obrazu'
+        });
+        return;
+      }
+
+      // Jeśli obraz jest większy niż 1000x1000, zmień jego rozmiar
+      let processedImage = image;
+      if (metadata.width > 1000 || metadata.height > 1000) {
+        processedImage = image.resize(1000, 1000, { 
+          fit: 'inside',
+          withoutEnlargement: true 
+        });
+      }
+
+      // Zapisz przetworzony obraz
+      const finalFileName = `${uuidv4()}.jpg`;
+      const finalFilePath = path.join('/app/uploads/song-images', finalFileName);
+      
+      await processedImage.jpeg({ quality: 90 }).toFile(finalFilePath);
+      
+      // Usuń oryginalny plik tymczasowy
+      fs.unlinkSync(tempFilePath);
+
+      // Pobierz informacje o starym obrazie (jeśli istnieje)
+      const oldImageResult = await sql`
+        SELECT "imageFilename", "imagePath" FROM "Utwor" 
+        WHERE "ID_utworu" = ${id}
+      `;
+
+      // Usuń stary obraz jeśli istnieje
+      if (oldImageResult[0]?.imagePath && fs.existsSync(oldImageResult[0].imagePath)) {
+        fs.unlinkSync(oldImageResult[0].imagePath);
+      }
+
+      // Pobierz rozmiar nowego pliku
+      const newFileStats = fs.statSync(finalFilePath);
+
+      // Aktualizuj informacje o obrazie w bazie danych
+      const updatedUtwor = await sql`
+        UPDATE "Utwor" SET
+          "imageFilename" = ${finalFileName},
+          "imagePath" = ${finalFilePath},
+          "imageMimetype" = ${'image/jpeg'},
+          "imageSize" = ${newFileStats.size}
+        WHERE "ID_utworu" = ${id}
+        RETURNING "ID_utworu", "imageFilename", "imagePath", "imageMimetype", "imageSize"
+      `;
+
+      res.status(200).json({
+        success: true,
+        message: 'Obraz utworu przesłany pomyślnie',
+        image: updatedUtwor[0]
+      });
+
+    } catch (processingError) {
+      // Usuń plik w przypadku błędu przetwarzania
+      if (fs.existsSync(tempFilePath)) {
+        fs.unlinkSync(tempFilePath);
+      }
+      throw processingError;
+    }
+
+  } catch (error) {
+    console.error('Błąd podczas przesyłania obrazu:', error);
+    
+    // Usuń plik w przypadku błędu
+    if (req.file) {
+      const filePath = path.join('/app/uploads/song-images', req.file.filename);
+      if (fs.existsSync(filePath)) {
+        fs.unlinkSync(filePath);
+      }
+    }
+    
+    res.status(500).json({ 
+      success: false, 
+      message: 'Błąd serwera podczas przesyłania obrazu' 
+    });
+  }
+});
+
+// Endpoint do wyświetlania obrazów utworów
+router.get('/image/:utworId', async (req: Request<{utworId: string}>, res: Response): Promise<void> => {
+  try {
+    const { utworId } = req.params;
+    const id = parseInt(utworId);
+    
+    // Pobierz informacje o obrazie z bazy danych
+    const result = await sql`
+      SELECT "imagePath", "imageFilename", "imageMimetype"
+      FROM "Utwor"
+      WHERE "ID_utworu" = ${id}
+    `;
+    
+    if (result.length === 0 || !result[0].imagePath) {
+      res.status(404).json({ 
+        success: false,
+        message: 'Obraz utworu nie istnieje' 
+      });
+      return;
+    }
+    
+    const image = result[0];
+    const filePath = image.imagePath;
+    
+    // Sprawdź czy plik istnieje
+    if (!fs.existsSync(filePath)) {
+      res.status(404).json({ 
+        success: false,
+        message: 'Plik obrazu nie istnieje'
+      });
+      return;
+    }
+    
+    // Ustaw odpowiednie nagłówki
+    res.setHeader('Content-Type', image.imageMimetype || 'image/jpeg');
+    res.setHeader('Cache-Control', 'public, max-age=31536000'); // Cache na rok
+    
+    // Wyślij plik
+    const fileStream = fs.createReadStream(filePath);
+    fileStream.pipe(res);
+    
+  } catch (error) {
+    console.error('Błąd podczas wyświetlania obrazu:', error);
+    res.status(500).json({ 
+      success: false,
+      message: 'Błąd serwera podczas wyświetlania obrazu' 
+    });
+  }
+});
 
 // Endpoint do listowania utworów - obsługuje GET i POST dla wyszukiwania
 router.get('/list', async (req: Request, res: Response): Promise<void> => {
@@ -308,9 +488,14 @@ router.delete('/delete/:utworId', async (req: Request<{utworId: string}>, res: R
     
     const utwor = result[0];
     
-    // Usuń plik z dysku jeśli istnieje
+    // Usuń plik audio z dysku jeśli istnieje
     if (utwor.filepath && fs.existsSync(utwor.filepath)) {
       fs.unlinkSync(utwor.filepath);
+    }
+    
+    // Usuń obraz z dysku jeśli istnieje
+    if (utwor.imagePath && fs.existsSync(utwor.imagePath)) {
+      fs.unlinkSync(utwor.imagePath);
     }
     
     await sql.begin(async (transaction) => {
@@ -506,6 +691,58 @@ router.put('/update/:utworId', async (req: Request<{utworId: string}>, res: Resp
       success: false,
       message: 'Błąd serwera podczas aktualizacji utworu',
       error: (error instanceof Error) ? error.message : 'Nieznany błąd'
+    });
+  }
+});
+
+// Endpoint do usuwania obrazu utworu
+router.delete('/image/:utworId', async (req: Request<{utworId: string}>, res: Response): Promise<void> => {
+  try {
+    const { utworId } = req.params;
+    const id = parseInt(utworId);
+    
+    // Pobierz informacje o obrazie z bazy danych
+    const result = await sql`
+      SELECT "imagePath", "imageFilename", "imageMimetype"
+      FROM "Utwor"
+      WHERE "ID_utworu" = ${id}
+    `;
+    
+    if (result.length === 0) {
+      res.status(404).json({ 
+        success: false, 
+        message: 'Utwór nie istnieje' 
+      });
+      return;
+    }
+    
+    const utwor = result[0];
+    
+    // Usuń plik z dysku jeśli istnieje
+    if (utwor.imagePath && fs.existsSync(utwor.imagePath)) {
+      fs.unlinkSync(utwor.imagePath);
+    }
+    
+    // Wyczyść dane obrazu w bazie danych
+    await sql`
+      UPDATE "Utwor" SET
+        "imageFilename" = NULL,
+        "imagePath" = NULL,
+        "imageMimetype" = NULL,
+        "imageSize" = NULL
+      WHERE "ID_utworu" = ${id}
+    `;
+    
+    res.json({
+      success: true,
+      message: 'Obraz utworu został usunięty'
+    });
+  } catch (error) {
+    console.error('Błąd podczas usuwania obrazu utworu:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Błąd serwera podczas usuwania obrazu utworu',
+      error: (error instanceof Error) ? error.message : 'Nieznany błąd'  
     });
   }
 });
