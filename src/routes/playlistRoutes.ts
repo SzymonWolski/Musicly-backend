@@ -1,11 +1,48 @@
 import { Request, Response, Router } from 'express';
 import { sql } from 'bun';
 import { authenticate } from '../middleware/authMiddleware';
+import multer from 'multer';
+import path from 'path';
+import fs from 'fs';
+import { v4 as uuidv4 } from 'uuid';
+import sharp from 'sharp';
 
 const router = Router();
 
 // Apply authentication middleware to all playlist routes
 router.use(authenticate);
+
+// Konfiguracja multer dla przechowywania obrazów playlist
+const playlistImageStorage = multer.diskStorage({
+  destination: (_req: Request, _file: Express.Multer.File, cb: (error: Error | null, destination: string) => void) => {
+    cb(null, '/app/uploads/playlist-images');
+  },
+  filename: (_req: Request, file: Express.Multer.File, cb: (error: Error | null, filename: string) => void) => {
+    const fileExt = path.extname(file.originalname);
+    const fileName = `${uuidv4()}${fileExt}`;
+    cb(null, fileName);
+  }
+});
+
+// Filtr plików - akceptowanie tylko obrazów
+const imageFileFilter = (_req: Request, file: Express.Multer.File, cb: multer.FileFilterCallback) => {
+  if (file.mimetype.startsWith('image/')) {
+    cb(null, true);
+  } else {
+    cb(new Error('Tylko pliki obrazów są dozwolone'));
+  }
+};
+
+const playlistImageUpload = multer({ 
+  storage: playlistImageStorage,
+  fileFilter: imageFileFilter,
+  limits: { fileSize: 10 * 1024 * 1024 } // Limit 10MB dla obrazów
+});
+
+// Typowanie dla req.file
+interface RequestWithFile extends Request {
+  file?: Express.Multer.File;
+}
 
 // Get all playlists for the current user
 router.get('/', async (req: Request, res: Response): Promise<void> => {
@@ -17,11 +54,15 @@ router.get('/', async (req: Request, res: Response): Promise<void> => {
       SELECT 
         p."ID_playlisty" as "id",
         p."nazwa_playlisty" as "name",
+        p."imageFilename",
+        p."imagePath",
+        p."imageMimetype",
+        p."imageSize",
         COUNT(pu."ID_utworu") as "songCount"
       FROM "Playlista" p
       LEFT JOIN "PlaylistaUtwor" pu ON p."ID_playlisty" = pu."ID_playlisty"
       WHERE p."ID_uzytkownik" = ${userId}
-      GROUP BY p."ID_playlisty", p."nazwa_playlisty"
+      GROUP BY p."ID_playlisty", p."nazwa_playlisty", p."imageFilename", p."imagePath", p."imageMimetype", p."imageSize"
       ORDER BY p."ID_playlisty"
     `;
     
@@ -44,11 +85,15 @@ router.get('/:playlistId', async (req: Request, res: Response): Promise<void> =>
       return;
     }
     
-    // Get playlist details
+    // Get playlist details including image info
     const playlist = await sql`
       SELECT 
         p."ID_playlisty" as "id",
-        p."nazwa_playlisty" as "name"
+        p."nazwa_playlisty" as "name",
+        p."imageFilename",
+        p."imagePath",
+        p."imageMimetype",
+        p."imageSize"
       FROM "Playlista" p
       WHERE p."ID_playlisty" = ${playlistId} AND p."ID_uzytkownik" = ${userId}
     `;
@@ -164,6 +209,254 @@ router.put('/:playlistId', async (req: Request, res: Response): Promise<void> =>
   }
 });
 
+// Endpoint do przesyłania obrazów playlist
+router.post('/:playlistId/image', playlistImageUpload.single('image'), async (req: RequestWithFile, res: Response): Promise<void> => {
+  try {
+    const userId = req.userId;
+    const playlistId = Number(req.params.playlistId);
+
+    if (isNaN(playlistId)) {
+      res.status(400).json({ error: 'Nieprawidłowe ID playlisty' });
+      return;
+    }
+
+    if (!req.file) {
+      res.status(400).json({ success: false, message: 'Nie przesłano pliku obrazu' });
+      return;
+    }
+
+    // Check if playlist exists and belongs to the user
+    const playlistExists = await sql`
+      SELECT "ID_playlisty" FROM "Playlista"
+      WHERE "ID_playlisty" = ${playlistId} AND "ID_uzytkownik" = ${userId}
+    `;
+    
+    if (playlistExists.length === 0) {
+      fs.unlinkSync(path.join('/app/uploads/playlist-images', req.file.filename));
+      res.status(404).json({
+        success: false,
+        message: 'Playlista nie istnieje lub nie należy do ciebie'
+      });
+      return;
+    }
+
+    const tempFilePath = path.join('/app/uploads/playlist-images', req.file.filename);
+    
+    try {
+      // Sprawdź wymiary obrazu i zmień rozmiar jeśli potrzeba
+      const image = sharp(tempFilePath);
+      const metadata = await image.metadata();
+      
+      if (!metadata.width || !metadata.height) {
+        fs.unlinkSync(tempFilePath);
+        res.status(400).json({
+          success: false,
+          message: 'Nie można określić wymiarów obrazu'
+        });
+        return;
+      }
+
+      // Jeśli obraz jest większy niż 1000x1000, zmień jego rozmiar
+      let processedImage = image;
+      if (metadata.width > 1000 || metadata.height > 1000) {
+        processedImage = image.resize(1000, 1000, { 
+          fit: 'inside',
+          withoutEnlargement: true 
+        });
+      }
+
+      // Zapisz przetworzony obraz
+      const finalFileName = `${uuidv4()}.jpg`;
+      const finalFilePath = path.join('/app/uploads/playlist-images', finalFileName);
+      
+      await processedImage.jpeg({ quality: 90 }).toFile(finalFilePath);
+      
+      // Usuń oryginalny plik tymczasowy
+      fs.unlinkSync(tempFilePath);
+
+      // Pobierz informacje o starym obrazie (jeśli istnieje)
+      const oldImageResult = await sql`
+        SELECT "imageFilename", "imagePath" FROM "Playlista" 
+        WHERE "ID_playlisty" = ${playlistId}
+      `;
+
+      // Usuń stary obraz jeśli istnieje
+      if (oldImageResult[0]?.imagePath && fs.existsSync(oldImageResult[0].imagePath)) {
+        fs.unlinkSync(oldImageResult[0].imagePath);
+      }
+
+      // Pobierz rozmiar nowego pliku
+      const newFileStats = fs.statSync(finalFilePath);
+
+      // Aktualizuj informacje o obrazie w bazie danych
+      const updatedPlaylist = await sql`
+        UPDATE "Playlista" SET
+          "imageFilename" = ${finalFileName},
+          "imagePath" = ${finalFilePath},
+          "imageMimetype" = ${'image/jpeg'},
+          "imageSize" = ${newFileStats.size}
+        WHERE "ID_playlisty" = ${playlistId}
+        RETURNING "ID_playlisty", "imageFilename", "imagePath", "imageMimetype", "imageSize"
+      `;
+
+      res.status(200).json({
+        success: true,
+        message: 'Obraz playlisty przesłany pomyślnie',
+        image: updatedPlaylist[0]
+      });
+
+    } catch (processingError) {
+      // Usuń plik w przypadku błędu przetwarzania
+      if (fs.existsSync(tempFilePath)) {
+        fs.unlinkSync(tempFilePath);
+      }
+      throw processingError;
+    }
+
+  } catch (error) {
+    console.error('Błąd podczas przesyłania obrazu playlisty:', error);
+    
+    // Usuń plik w przypadku błędu
+    if (req.file) {
+      const filePath = path.join('/app/uploads/playlist-images', req.file.filename);
+      if (fs.existsSync(filePath)) {
+        fs.unlinkSync(filePath);
+      }
+    }
+    
+    res.status(500).json({ 
+      success: false, 
+      message: 'Błąd serwera podczas przesyłania obrazu playlisty' 
+    });
+  }
+});
+
+// Endpoint do wyświetlania obrazów playlist
+router.get('/:playlistId/image', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const userId = req.userId;
+    const playlistId = Number(req.params.playlistId);
+    
+    if (isNaN(playlistId)) {
+      res.status(400).json({ error: 'Nieprawidłowe ID playlisty' });
+      return;
+    }
+    
+    // Check if playlist belongs to the user and get image info
+    const result = await sql`
+      SELECT "imagePath", "imageFilename", "imageMimetype"
+      FROM "Playlista"
+      WHERE "ID_playlisty" = ${playlistId} AND "ID_uzytkownik" = ${userId}
+    `;
+    
+    if (result.length === 0) {
+      res.status(404).json({ 
+        success: false,
+        message: 'Playlista nie istnieje lub nie należy do ciebie' 
+      });
+      return;
+    }
+    
+    if (!result[0].imagePath) {
+      res.status(404).json({ 
+        success: false,
+        message: 'Obraz playlisty nie istnieje' 
+      });
+      return;
+    }
+    
+    const playlist = result[0];
+    const filePath = playlist.imagePath;
+    
+    // Sprawdź czy plik istnieje
+    if (!fs.existsSync(filePath)) {
+      res.status(404).json({ 
+        success: false,
+        message: 'Plik obrazu nie istnieje'
+      });
+      return;
+    }
+    
+    // Pobierz statystyki pliku
+    const stat = fs.statSync(filePath);
+    
+    // Ustaw odpowiednie nagłówki podobnie jak w fileRoutes i profileRoutes
+    res.writeHead(200, {
+      'Content-Length': stat.size,
+      'Content-Type': playlist.imageMimetype || 'image/jpeg',
+      'Cache-Control': 'public, max-age=31536000' // Cache na rok
+    });
+    
+    // Wyślij plik
+    const fileStream = fs.createReadStream(filePath);
+    fileStream.pipe(res);
+    
+  } catch (error) {
+    console.error('Błąd podczas wyświetlania obrazu playlisty:', error);
+    res.status(500).json({ 
+      success: false,
+      message: 'Błąd serwera podczas wyświetlania obrazu playlisty' 
+    });
+  }
+});
+
+// Endpoint do usuwania obrazu playlisty
+router.delete('/:playlistId/image', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const userId = req.userId;
+    const playlistId = Number(req.params.playlistId);
+    
+    if (isNaN(playlistId)) {
+      res.status(400).json({ error: 'Nieprawidłowe ID playlisty' });
+      return;
+    }
+    
+    // Check if playlist belongs to the user and get image info
+    const result = await sql`
+      SELECT "imagePath", "imageFilename", "imageMimetype"
+      FROM "Playlista"
+      WHERE "ID_playlisty" = ${playlistId} AND "ID_uzytkownik" = ${userId}
+    `;
+    
+    if (result.length === 0) {
+      res.status(404).json({ 
+        success: false, 
+        message: 'Playlista nie istnieje lub nie należy do ciebie' 
+      });
+      return;
+    }
+    
+    const playlist = result[0];
+    
+    // Usuń plik z dysku jeśli istnieje
+    if (playlist.imagePath && fs.existsSync(playlist.imagePath)) {
+      fs.unlinkSync(playlist.imagePath);
+    }
+    
+    // Wyczyść dane obrazu w bazie danych
+    await sql`
+      UPDATE "Playlista" SET
+        "imageFilename" = NULL,
+        "imagePath" = NULL,
+        "imageMimetype" = NULL,
+        "imageSize" = NULL
+      WHERE "ID_playlisty" = ${playlistId}
+    `;
+    
+    res.json({
+      success: true,
+      message: 'Obraz playlisty został usunięty'
+    });
+  } catch (error) {
+    console.error('Błąd podczas usuwania obrazu playlisty:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Błąd serwera podczas usuwania obrazu playlisty',
+      error: (error instanceof Error) ? error.message : 'Nieznany błąd'  
+    });
+  }
+});
+
 // Delete a playlist
 router.delete('/:playlistId', async (req: Request, res: Response): Promise<void> => {
   try {
@@ -175,15 +468,20 @@ router.delete('/:playlistId', async (req: Request, res: Response): Promise<void>
       return;
     }
     
-    // Check if playlist exists and belongs to the user
+    // Check if playlist exists and belongs to the user, get image info
     const playlist = await sql`
-      SELECT "ID_playlisty" FROM "Playlista"
+      SELECT "ID_playlisty", "imagePath" FROM "Playlista"
       WHERE "ID_playlisty" = ${playlistId} AND "ID_uzytkownik" = ${userId}
     `;
     
     if (playlist.length === 0) {
       res.status(404).json({ error: 'Playlista nie istnieje lub nie należy do ciebie' });
       return;
+    }
+    
+    // Usuń obraz z dysku jeśli istnieje
+    if (playlist[0].imagePath && fs.existsSync(playlist[0].imagePath)) {
+      fs.unlinkSync(playlist[0].imagePath);
     }
     
     // Delete all playlist songs first (due to foreign key constraints)
