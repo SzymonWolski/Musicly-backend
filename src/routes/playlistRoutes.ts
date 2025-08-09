@@ -44,27 +44,52 @@ interface RequestWithFile extends Request {
   file?: Express.Multer.File;
 }
 
-// Get all playlists for the current user
+// Get all playlists - with optional filter for current user only
 router.get('/', async (req: Request, res: Response): Promise<void> => {
   try {
     const userId = req.userId;
+    const { myOnly } = req.query; // Query parameter to filter only user's playlists
 
-    // Get all playlists for the user with song count
-    const playlists = await sql`
-      SELECT 
-        p."ID_playlisty" as "id",
-        p."nazwa_playlisty" as "name",
-        p."imageFilename",
-        p."imagePath",
-        p."imageMimetype",
-        p."imageSize",
-        COUNT(pu."ID_utworu") as "songCount"
-      FROM "Playlista" p
-      LEFT JOIN "PlaylistaUtwor" pu ON p."ID_playlisty" = pu."ID_playlisty"
-      WHERE p."ID_uzytkownik" = ${userId}
-      GROUP BY p."ID_playlisty", p."nazwa_playlisty", p."imageFilename", p."imagePath", p."imageMimetype", p."imageSize"
-      ORDER BY p."ID_playlisty"
-    `;
+    let playlists;
+    
+    if (myOnly === 'true') {
+      // Get only playlists created by the current user
+      playlists = await sql`
+        SELECT 
+          p."ID_playlisty" as "id",
+          p."nazwa_playlisty" as "name",
+          p."imageFilename",
+          p."imagePath",
+          p."imageMimetype",
+          p."imageSize",
+          u."nick" as "createdBy",
+          COUNT(pu."ID_utworu") as "songCount"
+        FROM "Playlista" p
+        JOIN "Uzytkownik" u ON p."ID_uzytkownik" = u."ID_uzytkownik"
+        LEFT JOIN "PlaylistaUtwor" pu ON p."ID_playlisty" = pu."ID_playlisty"
+        WHERE p."ID_uzytkownik" = ${userId}
+        GROUP BY p."ID_playlisty", p."nazwa_playlisty", p."imageFilename", p."imagePath", p."imageMimetype", p."imageSize", u."nick"
+        ORDER BY p."ID_playlisty"
+      `;
+    } else {
+      // Get all playlists with creator's nick
+      playlists = await sql`
+        SELECT 
+          p."ID_playlisty" as "id",
+          p."nazwa_playlisty" as "name",
+          p."imageFilename",
+          p."imagePath",
+          p."imageMimetype",
+          p."imageSize",
+          u."nick" as "createdBy",
+          COUNT(pu."ID_utworu") as "songCount"
+        FROM "Playlista" p
+        JOIN "Uzytkownik" u ON p."ID_uzytkownik" = u."ID_uzytkownik"
+        LEFT JOIN "PlaylistaUtwor" pu ON p."ID_playlisty" = pu."ID_playlisty"
+        GROUP BY p."ID_playlisty", p."nazwa_playlisty", p."imageFilename", p."imagePath", p."imageMimetype", p."imageSize", u."nick"
+        ORDER BY p."ID_playlisty"
+      `;
+    }
     
     res.status(200).json({ playlists });
     
@@ -85,7 +110,7 @@ router.get('/:playlistId', async (req: Request, res: Response): Promise<void> =>
       return;
     }
     
-    // Get playlist details including image info
+    // Get playlist details including image info and creator's nick
     const playlist = await sql`
       SELECT 
         p."ID_playlisty" as "id",
@@ -93,15 +118,24 @@ router.get('/:playlistId', async (req: Request, res: Response): Promise<void> =>
         p."imageFilename",
         p."imagePath",
         p."imageMimetype",
-        p."imageSize"
+        p."imageSize",
+        u."nick" as "createdBy",
+        p."ID_uzytkownik" as "ownerId"
       FROM "Playlista" p
-      WHERE p."ID_playlisty" = ${playlistId} AND p."ID_uzytkownik" = ${userId}
+      JOIN "Uzytkownik" u ON p."ID_uzytkownik" = u."ID_uzytkownik"
+      WHERE p."ID_playlisty" = ${playlistId}
     `;
     
     if (playlist.length === 0) {
-      res.status(404).json({ error: 'Playlista nie istnieje lub nie należy do ciebie' });
+      res.status(404).json({ error: 'Playlista nie istnieje' });
       return;
     }
+    
+    // Check if user has access to this playlist (owner or public access)
+    const playlistData = playlist[0];
+    const isOwner = playlistData.ownerId === userId;
+    
+    // For now, all playlists are accessible, but you can add privacy logic here
     
     // Get songs in the playlist, ordered by kolejnosc
     const songs = await sql`
@@ -119,7 +153,10 @@ router.get('/:playlistId', async (req: Request, res: Response): Promise<void> =>
     `;
     
     res.status(200).json({ 
-      playlist: playlist[0],
+      playlist: {
+        ...playlistData,
+        isOwner
+      },
       songs
     });
     
@@ -140,6 +177,11 @@ router.post('/', async (req: Request, res: Response): Promise<void> => {
       return;
     }
     
+    // Get user's nick for response
+    const user = await sql`
+      SELECT "nick" FROM "Uzytkownik" WHERE "ID_uzytkownik" = ${userId}
+    `;
+    
     // Create the playlist
     const result = await sql`
       INSERT INTO "Playlista" ("ID_uzytkownik", "nazwa_playlisty")
@@ -153,7 +195,9 @@ router.post('/', async (req: Request, res: Response): Promise<void> => {
       playlist: {
         id: result[0].id,
         name,
-        songCount: 0
+        createdBy: user[0].nick,
+        songCount: 0,
+        isOwner: true
       }
     });
     
@@ -707,14 +751,19 @@ router.get('/:playlistId/songs', async (req: Request, res: Response): Promise<vo
       return;
     }
     
-    // Check if playlist exists and belongs to the user
+    // Check if playlist exists and get owner info
     const playlist = await sql`
-      SELECT "ID_playlisty" FROM "Playlista"
-      WHERE "ID_playlisty" = ${playlistId} AND "ID_uzytkownik" = ${userId}
+      SELECT 
+        p."ID_playlisty",
+        p."ID_uzytkownik" as "ownerId",
+        u."nick" as "createdBy"
+      FROM "Playlista" p
+      JOIN "Uzytkownik" u ON p."ID_uzytkownik" = u."ID_uzytkownik"
+      WHERE p."ID_playlisty" = ${playlistId}
     `;
     
     if (playlist.length === 0) {
-      res.status(404).json({ error: 'Playlista nie istnieje lub nie należy do ciebie' });
+      res.status(404).json({ error: 'Playlista nie istnieje' });
       return;
     }
     
@@ -736,7 +785,13 @@ router.get('/:playlistId/songs', async (req: Request, res: Response): Promise<vo
       ORDER BY pu."kolejnosc"
     `;
     
-    res.status(200).json({ songs });
+    res.status(200).json({ 
+      songs,
+      playlistInfo: {
+        createdBy: playlist[0].createdBy,
+        isOwner: playlist[0].ownerId === userId
+      }
+    });
     
   } catch (error) {
     console.error('Error fetching playlist songs:', error);
