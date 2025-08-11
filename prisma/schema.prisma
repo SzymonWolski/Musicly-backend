@@ -21,6 +21,7 @@ model Uzytkownik {
   profileImageSize     Int?
   
   Polubienia    Polubienia[]
+  PolubieniaPlaylist PolubieniaPlaylist[]
   Playlisty     Playlista[]
   
   // Relacje dla funkcji znajomych
@@ -85,6 +86,17 @@ model Polubienia {
   @@id([ID_piosenki, ID_uzytkownik])
 }
 
+model PolubieniaPlaylist {
+  ID_playlisty    Int
+  ID_uzytkownik   Int
+  data_polubienia String
+
+  Uzytkownik      Uzytkownik @relation(fields: [ID_uzytkownik], references: [ID_uzytkownik])
+  Playlista       Playlista  @relation(fields: [ID_playlisty], references: [ID_playlisty])
+
+  @@id([ID_playlisty, ID_uzytkownik])
+}
+
 model Numeracja_utworu {
   ID_utworu     Int   @id
   nr_kolejnosci Int
@@ -104,6 +116,7 @@ model Playlista {
   imageSize       Int?
 
   Uzytkownik      Uzytkownik @relation(fields: [ID_uzytkownik], references: [ID_uzytkownik])
+  PolubieniaPlaylist PolubieniaPlaylist[]
   Utwory          PlaylistaUtwor[]
 }
 

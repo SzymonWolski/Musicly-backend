@@ -63,16 +63,20 @@ router.get('/', async (req: Request, res: Response): Promise<void> => {
           p."imageMimetype",
           p."imageSize",
           u."nick" as "createdBy",
-          COUNT(pu."ID_utworu") as "songCount"
+          COUNT(DISTINCT pu."ID_utworu") as "songCount",
+          COUNT(DISTINCT pp."ID_uzytkownik") as "likeCount",
+          CASE WHEN pp_current."ID_playlisty" IS NOT NULL THEN true ELSE false END as "isFavorite"
         FROM "Playlista" p
         JOIN "Uzytkownik" u ON p."ID_uzytkownik" = u."ID_uzytkownik"
         LEFT JOIN "PlaylistaUtwor" pu ON p."ID_playlisty" = pu."ID_playlisty"
+        LEFT JOIN "PolubieniaPlaylist" pp ON p."ID_playlisty" = pp."ID_playlisty"
+        LEFT JOIN "PolubieniaPlaylist" pp_current ON p."ID_playlisty" = pp_current."ID_playlisty" AND pp_current."ID_uzytkownik" = ${userId}
         WHERE p."ID_uzytkownik" = ${userId}
-        GROUP BY p."ID_playlisty", p."nazwa_playlisty", p."imageFilename", p."imagePath", p."imageMimetype", p."imageSize", u."nick"
+        GROUP BY p."ID_playlisty", p."nazwa_playlisty", p."imageFilename", p."imagePath", p."imageMimetype", p."imageSize", u."nick", pp_current."ID_playlisty"
         ORDER BY p."ID_playlisty"
       `;
     } else {
-      // Get all playlists with creator's nick
+      // Get all playlists with creator's nick, like count and favorite status
       playlists = await sql`
         SELECT 
           p."ID_playlisty" as "id",
@@ -82,11 +86,15 @@ router.get('/', async (req: Request, res: Response): Promise<void> => {
           p."imageMimetype",
           p."imageSize",
           u."nick" as "createdBy",
-          COUNT(pu."ID_utworu") as "songCount"
+          COUNT(DISTINCT pu."ID_utworu") as "songCount",
+          COUNT(DISTINCT pp."ID_uzytkownik") as "likeCount",
+          CASE WHEN pp_current."ID_playlisty" IS NOT NULL THEN true ELSE false END as "isFavorite"
         FROM "Playlista" p
         JOIN "Uzytkownik" u ON p."ID_uzytkownik" = u."ID_uzytkownik"
         LEFT JOIN "PlaylistaUtwor" pu ON p."ID_playlisty" = pu."ID_playlisty"
-        GROUP BY p."ID_playlisty", p."nazwa_playlisty", p."imageFilename", p."imagePath", p."imageMimetype", p."imageSize", u."nick"
+        LEFT JOIN "PolubieniaPlaylist" pp ON p."ID_playlisty" = pp."ID_playlisty"
+        LEFT JOIN "PolubieniaPlaylist" pp_current ON p."ID_playlisty" = pp_current."ID_playlisty" AND pp_current."ID_uzytkownik" = ${userId}
+        GROUP BY p."ID_playlisty", p."nazwa_playlisty", p."imageFilename", p."imagePath", p."imageMimetype", p."imageSize", u."nick", pp_current."ID_playlisty"
         ORDER BY p."ID_playlisty"
       `;
     }
@@ -110,7 +118,7 @@ router.get('/:playlistId', async (req: Request, res: Response): Promise<void> =>
       return;
     }
     
-    // Get playlist details including image info and creator's nick
+    // Get playlist details including image info, creator's nick, like count and favorite status
     const playlist = await sql`
       SELECT 
         p."ID_playlisty" as "id",
@@ -120,10 +128,15 @@ router.get('/:playlistId', async (req: Request, res: Response): Promise<void> =>
         p."imageMimetype",
         p."imageSize",
         u."nick" as "createdBy",
-        p."ID_uzytkownik" as "ownerId"
+        p."ID_uzytkownik" as "ownerId",
+        COUNT(DISTINCT pp."ID_uzytkownik") as "likeCount",
+        CASE WHEN pp_current."ID_playlisty" IS NOT NULL THEN true ELSE false END as "isFavorite"
       FROM "Playlista" p
       JOIN "Uzytkownik" u ON p."ID_uzytkownik" = u."ID_uzytkownik"
+      LEFT JOIN "PolubieniaPlaylist" pp ON p."ID_playlisty" = pp."ID_playlisty"
+      LEFT JOIN "PolubieniaPlaylist" pp_current ON p."ID_playlisty" = pp_current."ID_playlisty" AND pp_current."ID_uzytkownik" = ${userId}
       WHERE p."ID_playlisty" = ${playlistId}
+      GROUP BY p."ID_playlisty", p."nazwa_playlisty", p."imageFilename", p."imagePath", p."imageMimetype", p."imageSize", u."nick", p."ID_uzytkownik", pp_current."ID_playlisty"
     `;
     
     if (playlist.length === 0) {
@@ -197,7 +210,9 @@ router.post('/', async (req: Request, res: Response): Promise<void> => {
         name,
         createdBy: user[0].nick,
         songCount: 0,
-        isOwner: true
+        likeCount: 0,
+        isOwner: true,
+        isFavorite: false
       }
     });
     
@@ -528,6 +543,12 @@ router.delete('/:playlistId', async (req: Request, res: Response): Promise<void>
       fs.unlinkSync(playlist[0].imagePath);
     }
     
+    // Delete all playlist favorites first (due to foreign key constraints)
+    await sql`
+      DELETE FROM "PolubieniaPlaylist"
+      WHERE "ID_playlisty" = ${playlistId}
+    `;
+    
     // Delete all playlist songs first (due to foreign key constraints)
     await sql`
       DELETE FROM "PlaylistaUtwor"
@@ -796,6 +817,47 @@ router.get('/:playlistId/songs', async (req: Request, res: Response): Promise<vo
   } catch (error) {
     console.error('Error fetching playlist songs:', error);
     res.status(500).json({ error: 'Wystąpił błąd podczas pobierania utworów z playlisty' });
+  }
+});
+
+// Get all liked playlists for the current user
+router.get('/favorites/all', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const userId = req.userId;
+
+    // Get all playlists liked by the current user
+    const likedPlaylists = await sql`
+      SELECT 
+        p."ID_playlisty" as "id",
+        p."nazwa_playlisty" as "name",
+        p."imageFilename",
+        p."imagePath", 
+        p."imageMimetype",
+        p."imageSize",
+        u."nick" as "createdBy",
+        pp."data_polubienia" as "likedAt",
+        COUNT(DISTINCT pu."ID_utworu") as "songCount",
+        COUNT(DISTINCT pp_all."ID_uzytkownik") as "likeCount",
+        true as "isFavorite",
+        CASE WHEN p."ID_uzytkownik" = ${userId} THEN true ELSE false END as "isOwner"
+      FROM "PolubieniaPlaylist" pp
+      JOIN "Playlista" p ON pp."ID_playlisty" = p."ID_playlisty"
+      JOIN "Uzytkownik" u ON p."ID_uzytkownik" = u."ID_uzytkownik"
+      LEFT JOIN "PlaylistaUtwor" pu ON p."ID_playlisty" = pu."ID_playlisty"
+      LEFT JOIN "PolubieniaPlaylist" pp_all ON p."ID_playlisty" = pp_all."ID_playlisty"
+      WHERE pp."ID_uzytkownik" = ${userId}
+      GROUP BY p."ID_playlisty", p."nazwa_playlisty", p."imageFilename", p."imagePath", p."imageMimetype", p."imageSize", u."nick", pp."data_polubienia", p."ID_uzytkownik"
+      ORDER BY pp."data_polubienia" DESC
+    `;
+    
+    res.status(200).json({ 
+      playlists: likedPlaylists,
+      message: 'Polubione playlisty pobrane pomyślnie'
+    });
+    
+  } catch (error) {
+    console.error('Error fetching liked playlists:', error);
+    res.status(500).json({ error: 'Wystąpił błąd podczas pobierania polubionych playlist' });
   }
 });
 
