@@ -285,7 +285,16 @@ router.get('/profile', async (req: Request, res: Response): Promise<void> => {
     
     res.status(200).json({
       success: true,
-      user: user[0]
+      user: {
+        id: user[0].id,
+        email: user[0].email,
+        nick: user[0].nick,
+        isAdmin: user[0].isAdmin,
+        profileImageFilename: user[0].profileImageFilename,
+        profileImagePath: user[0].profileImagePath,
+        profileImageMimetype: user[0].profileImageMimetype,
+        profileImageSize: user[0].profileImageSize
+      }
     });
     return;
   } catch (error) {

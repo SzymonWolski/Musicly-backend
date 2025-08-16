@@ -53,29 +53,59 @@ router.get('/list', async (req: Request, res: Response): Promise<void> => {
   }
 });
 
-// Search for users by nick or email
+// Search users by nickname, email, or ID
 router.get('/search', async (req: Request, res: Response): Promise<void> => {
   try {
-    const { query } = req.query;
-
+    const userId = res.locals.userId;
+    const { query, searchType } = req.query;
+    
     if (!query || typeof query !== 'string') {
-      res.status(400).json({ error: 'Wyszukiwana fraza jest wymagana' });
+      res.status(400).json({ error: 'Query parameter jest wymagany' });
       return;
     }
     
-    const trimmedQuery = query.trim();
-    const searchPattern = `%${trimmedQuery}%`;
+    let users;
     
-    const users = await sql`
-      SELECT "ID_uzytkownik", nick, email
-      FROM "Uzytkownik"
-      WHERE (
-        LOWER(nick) LIKE LOWER(${searchPattern}) OR
-        LOWER(email) LIKE LOWER(${searchPattern})
-      )
-    `;
+    if (searchType === 'id') {
+      // Search by ID - find all users whose ID contains the search digits
+      const searchDigits = query.trim();
+      
+      // Validate that the query contains only digits
+      if (!/^\d+$/.test(searchDigits)) {
+        res.status(400).json({ error: 'Wyszukiwanie po ID wymaga tylko cyfr' });
+        return;
+      }
+      
+      // Search for users whose ID contains the search digits
+      users = await sql`
+        SELECT "ID_uzytkownik", "nick", "email"
+        FROM "Uzytkownik"
+        WHERE "ID_uzytkownik"::text LIKE ${`%${searchDigits}%`}
+        AND "ID_uzytkownik" != ${userId}
+        ORDER BY "ID_uzytkownik" ASC
+        LIMIT 50
+      `;
+    } else {
+      // Search by nickname or email (existing functionality)
+      const searchTerm = `%${query.toLowerCase()}%`;
+      
+      users = await sql`
+        SELECT "ID_uzytkownik", "nick", "email"
+        FROM "Uzytkownik"
+        WHERE (
+          LOWER("nick") LIKE ${searchTerm} OR 
+          LOWER("email") LIKE ${searchTerm}
+        )
+        AND "ID_uzytkownik" != ${userId}
+        ORDER BY "nick" ASC
+        LIMIT 50
+      `;
+    }
     
-    res.status(200).json({ users });
+    res.status(200).json({
+      success: true,
+      users: users || []
+    });
     return;
   } catch (error) {
     console.error('Error searching users:', error);
