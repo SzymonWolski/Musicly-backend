@@ -148,9 +148,10 @@ model Wiadomosci {
   ID_wiadomosci   Int       @id @default(autoincrement())
   ID_nadawca      Int       // Użytkownik, który wysłał wiadomość
   ID_odbiorca     Int       // Użytkownik, który otrzymał wiadomość
-  tresc           String    // Treść wiadomości
+  tresc           String    // Treść wiadomości (zaszyfrowana)
   data_wyslania   DateTime  @default(now())
   przeczytana     Boolean   @default(false)
+  klucz_timestamp BigInt    @default(0)// Timestamp używany do generowania klucza szyfrowania
   
   Nadawca         Uzytkownik @relation("wyslaneWiadomosci", fields: [ID_nadawca], references: [ID_uzytkownik])
   Odbiorca        Uzytkownik @relation("otrzymaneWiadomosci", fields: [ID_odbiorca], references: [ID_uzytkownik]) 

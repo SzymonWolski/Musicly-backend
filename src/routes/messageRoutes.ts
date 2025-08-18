@@ -14,6 +14,7 @@ interface Message {
   content: string;
   timestamp: string;
   read: boolean;
+  keyTimestamp: number;
 }
 
 // Get message history between current user and friend
@@ -36,7 +37,8 @@ router.get('/:friendId', async (req: Request, res: Response): Promise<void> => {
         "ID_odbiorca" as recipient,
         "tresc" as content,
         "data_wyslania" as timestamp,
-        "przeczytana" as read
+        "przeczytana" as read,
+        "klucz_timestamp" as keyTimestamp
       FROM "Wiadomosci"
       WHERE 
         ("ID_nadawca" = ${userId} AND "ID_odbiorca" = ${friendId})
@@ -44,6 +46,12 @@ router.get('/:friendId', async (req: Request, res: Response): Promise<void> => {
         ("ID_nadawca" = ${friendId} AND "ID_odbiorca" = ${userId})
       ORDER BY "data_wyslania" ASC
     `;
+
+    // Return messages with encrypted content and keyTimestamp for frontend decryption
+    const formattedMessages = messages.map((msg: any) => ({
+      ...msg,
+      keyTimestamp: Number(msg.keytimestamp) // Each message has its own timestamp
+    }));
 
     // Auto-mark received messages as read
     if (messages.length > 0) {
@@ -54,7 +62,7 @@ router.get('/:friendId', async (req: Request, res: Response): Promise<void> => {
       `;
     }
 
-    res.status(200).json({ messages });
+    res.status(200).json({ messages: formattedMessages });
     
   } catch (error) {
     console.error('Error fetching messages:', error);
@@ -62,7 +70,7 @@ router.get('/:friendId', async (req: Request, res: Response): Promise<void> => {
   }
 });
 
-// Check for new messages since a specified message ID
+// Check for new messages since a specified message ID  
 router.get('/:friendId/new', async (req: Request, res: Response): Promise<void> => {
   try {
     const userId = req.userId;
@@ -83,7 +91,8 @@ router.get('/:friendId/new', async (req: Request, res: Response): Promise<void> 
         "ID_odbiorca" as recipient,
         "tresc" as content,
         "data_wyslania" as timestamp,
-        "przeczytana" as read
+        "przeczytana" as read,
+        "klucz_timestamp" as keyTimestamp
       FROM "Wiadomosci"
       WHERE 
         (
@@ -95,6 +104,12 @@ router.get('/:friendId/new', async (req: Request, res: Response): Promise<void> 
       ORDER BY "data_wyslania" ASC
     `;
 
+    // Return messages with encrypted content and keyTimestamp for frontend decryption
+    const formattedMessages = newMessages.map((msg: any) => ({
+      ...msg,
+      keyTimestamp: Number(msg.keytimestamp) // Each message has its own timestamp
+    }));
+
     // Auto-mark received messages as read
     if (newMessages.length > 0) {
       await sql`
@@ -104,7 +119,7 @@ router.get('/:friendId/new', async (req: Request, res: Response): Promise<void> 
       `;
     }
 
-    res.status(200).json({ messages: newMessages });
+    res.status(200).json({ messages: formattedMessages });
     
   } catch (error) {
     console.error('Error checking for new messages:', error);
@@ -116,11 +131,17 @@ router.get('/:friendId/new', async (req: Request, res: Response): Promise<void> 
 router.post('/send', async (req: Request, res: Response): Promise<void> => {
   try {
     const senderId = req.userId;
-    const { recipientId, content } = req.body;
+    const { recipientId, encryptedContent, keyTimestamp } = req.body;
     
     // Validate input
-    if (!recipientId || !content || typeof content !== 'string' || content.trim() === '') {
+    if (!recipientId || !encryptedContent || !keyTimestamp || typeof encryptedContent !== 'string' || encryptedContent.trim() === '') {
       res.status(400).json({ error: 'Brakujące lub nieprawidłowe dane wiadomości' });
+      return;
+    }
+
+    // Validate keyTimestamp is a number
+    if (typeof keyTimestamp !== 'number' || keyTimestamp <= 0) {
+      res.status(400).json({ error: 'Nieprawidłowy timestamp klucza' });
       return;
     }
 
@@ -135,21 +156,23 @@ router.post('/send', async (req: Request, res: Response): Promise<void> => {
       return;
     }
 
-    // Create the message
+    // Create the message with encrypted content from frontend
     const result = await sql`
       INSERT INTO "Wiadomosci" (
         "ID_nadawca",
         "ID_odbiorca",
         "tresc",
         "data_wyslania",
-        "przeczytana"
+        "przeczytana",
+        "klucz_timestamp"
       )
       VALUES (
         ${senderId},
         ${Number(recipientId)},
-        ${content},
+        ${encryptedContent},
         CURRENT_TIMESTAMP,
-        FALSE
+        FALSE,
+        ${keyTimestamp}
       )
       RETURNING 
         "ID_wiadomosci" as id,
@@ -157,11 +180,14 @@ router.post('/send', async (req: Request, res: Response): Promise<void> => {
         "ID_odbiorca" as recipient,
         "tresc" as content,
         "data_wyslania" as timestamp,
-        "przeczytana" as read
+        "przeczytana" as read,
+        "klucz_timestamp" as keyTimestamp
     `;
 
-    // Return the created message
+    // Return the created message with encrypted content and keyTimestamp
     const newMessage = result[0];
+    newMessage.keyTimestamp = keyTimestamp; // Return the timestamp for this specific message
+    
     res.status(201).json({ message: newMessage });
     
   } catch (error) {
