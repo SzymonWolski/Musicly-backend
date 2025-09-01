@@ -9,8 +9,10 @@ import sharp from 'sharp';
 
 const router = Router();
 
-// Apply authentication middleware to all playlist routes
-router.use(authenticate);
+// Typowanie dla req.file
+interface RequestWithFile extends Request {
+  file?: Express.Multer.File;
+}
 
 // Konfiguracja multer dla przechowywania obrazów playlist
 const playlistImageStorage = multer.diskStorage({
@@ -39,20 +41,21 @@ const playlistImageUpload = multer({
   limits: { fileSize: 10 * 1024 * 1024 } // Limit 10MB dla obrazów
 });
 
-// Typowanie dla req.file
-interface RequestWithFile extends Request {
-  file?: Express.Multer.File;
-}
-
 // Get all playlists - with optional filter for current user only
 router.get('/', async (req: Request, res: Response): Promise<void> => {
   try {
-    const userId = req.userId;
+    const userId = req.userId; // This may be undefined for non-authenticated users
     const { myOnly } = req.query; // Query parameter to filter only user's playlists
+
+    // If myOnly is true but user is not logged in, return error
+    if (myOnly === 'true' && !userId) {
+      res.status(401).json({ error: 'Authentication required to view your playlists' });
+      return;
+    }
 
     let playlists;
     
-    if (myOnly === 'true') {
+    if (myOnly === 'true' && userId) {
       // Get only playlists created by the current user
       playlists = await sql`
         SELECT 
@@ -76,27 +79,50 @@ router.get('/', async (req: Request, res: Response): Promise<void> => {
         ORDER BY p."ID_playlisty"
       `;
     } else {
-      // Get all playlists with creator's nick, like count and favorite status
-      playlists = await sql`
-        SELECT 
-          p."ID_playlisty" as "id",
-          p."nazwa_playlisty" as "name",
-          p."imageFilename",
-          p."imagePath",
-          p."imageMimetype",
-          p."imageSize",
-          u."nick" as "createdBy",
-          COUNT(DISTINCT pu."ID_utworu") as "songCount",
-          COUNT(DISTINCT pp."ID_uzytkownik") as "likeCount",
-          CASE WHEN pp_current."ID_playlisty" IS NOT NULL THEN true ELSE false END as "isFavorite"
-        FROM "Playlista" p
-        JOIN "Uzytkownik" u ON p."ID_uzytkownik" = u."ID_uzytkownik"
-        LEFT JOIN "PlaylistaUtwor" pu ON p."ID_playlisty" = pu."ID_playlisty"
-        LEFT JOIN "PolubieniaPlaylist" pp ON p."ID_playlisty" = pp."ID_playlisty"
-        LEFT JOIN "PolubieniaPlaylist" pp_current ON p."ID_playlisty" = pp_current."ID_playlisty" AND pp_current."ID_uzytkownik" = ${userId}
-        GROUP BY p."ID_playlisty", p."nazwa_playlisty", p."imageFilename", p."imagePath", p."imageMimetype", p."imageSize", u."nick", pp_current."ID_playlisty"
-        ORDER BY p."ID_playlisty"
-      `;
+      // Get all playlists with creator's nick, like count and favorite status (if logged in)
+      if (userId) {
+        playlists = await sql`
+          SELECT 
+            p."ID_playlisty" as "id",
+            p."nazwa_playlisty" as "name",
+            p."imageFilename",
+            p."imagePath",
+            p."imageMimetype",
+            p."imageSize",
+            u."nick" as "createdBy",
+            COUNT(DISTINCT pu."ID_utworu") as "songCount",
+            COUNT(DISTINCT pp."ID_uzytkownik") as "likeCount",
+            CASE WHEN pp_current."ID_playlisty" IS NOT NULL THEN true ELSE false END as "isFavorite"
+          FROM "Playlista" p
+          JOIN "Uzytkownik" u ON p."ID_uzytkownik" = u."ID_uzytkownik"
+          LEFT JOIN "PlaylistaUtwor" pu ON p."ID_playlisty" = pu."ID_playlisty"
+          LEFT JOIN "PolubieniaPlaylist" pp ON p."ID_playlisty" = pp."ID_playlisty"
+          LEFT JOIN "PolubieniaPlaylist" pp_current ON p."ID_playlisty" = pp_current."ID_playlisty" AND pp_current."ID_uzytkownik" = ${userId}
+          GROUP BY p."ID_playlisty", p."nazwa_playlisty", p."imageFilename", p."imagePath", p."imageMimetype", p."imageSize", u."nick", pp_current."ID_playlisty"
+          ORDER BY p."ID_playlisty"
+        `;
+      } else {
+        // For non-authenticated users - no favorite status
+        playlists = await sql`
+          SELECT 
+            p."ID_playlisty" as "id",
+            p."nazwa_playlisty" as "name",
+            p."imageFilename",
+            p."imagePath",
+            p."imageMimetype",
+            p."imageSize",
+            u."nick" as "createdBy",
+            COUNT(DISTINCT pu."ID_utworu") as "songCount",
+            COUNT(DISTINCT pp."ID_uzytkownik") as "likeCount",
+            false as "isFavorite"
+          FROM "Playlista" p
+          JOIN "Uzytkownik" u ON p."ID_uzytkownik" = u."ID_uzytkownik"
+          LEFT JOIN "PlaylistaUtwor" pu ON p."ID_playlisty" = pu."ID_playlisty"
+          LEFT JOIN "PolubieniaPlaylist" pp ON p."ID_playlisty" = pp."ID_playlisty"
+          GROUP BY p."ID_playlisty", p."nazwa_playlisty", p."imageFilename", p."imagePath", p."imageMimetype", p."imageSize", u."nick"
+          ORDER BY p."ID_playlisty"
+        `;
+      }
     }
     
     res.status(200).json({ playlists });
@@ -110,7 +136,7 @@ router.get('/', async (req: Request, res: Response): Promise<void> => {
 // Get a specific playlist with songs
 router.get('/:playlistId', async (req: Request, res: Response): Promise<void> => {
   try {
-    const userId = req.userId;
+    const userId = req.userId; // May be undefined for non-authenticated users
     const playlistId = Number(req.params.playlistId);
     
     if (isNaN(playlistId)) {
@@ -118,37 +144,59 @@ router.get('/:playlistId', async (req: Request, res: Response): Promise<void> =>
       return;
     }
     
-    // Get playlist details including image info, creator's nick, like count and favorite status
-    const playlist = await sql`
-      SELECT 
-        p."ID_playlisty" as "id",
-        p."nazwa_playlisty" as "name",
-        p."imageFilename",
-        p."imagePath",
-        p."imageMimetype",
-        p."imageSize",
-        u."nick" as "createdBy",
-        p."ID_uzytkownik" as "ownerId",
-        COUNT(DISTINCT pp."ID_uzytkownik") as "likeCount",
-        CASE WHEN pp_current."ID_playlisty" IS NOT NULL THEN true ELSE false END as "isFavorite"
-      FROM "Playlista" p
-      JOIN "Uzytkownik" u ON p."ID_uzytkownik" = u."ID_uzytkownik"
-      LEFT JOIN "PolubieniaPlaylist" pp ON p."ID_playlisty" = pp."ID_playlisty"
-      LEFT JOIN "PolubieniaPlaylist" pp_current ON p."ID_playlisty" = pp_current."ID_playlisty" AND pp_current."ID_uzytkownik" = ${userId}
-      WHERE p."ID_playlisty" = ${playlistId}
-      GROUP BY p."ID_playlisty", p."nazwa_playlisty", p."imageFilename", p."imagePath", p."imageMimetype", p."imageSize", u."nick", p."ID_uzytkownik", pp_current."ID_playlisty"
-    `;
+    // Get playlist details - handling both authenticated and non-authenticated users
+    let playlist;
+    if (userId) {
+      // For authenticated users - include favorite status
+      playlist = await sql`
+        SELECT 
+          p."ID_playlisty" as "id",
+          p."nazwa_playlisty" as "name",
+          p."imageFilename",
+          p."imagePath",
+          p."imageMimetype",
+          p."imageSize",
+          u."nick" as "createdBy",
+          p."ID_uzytkownik" as "ownerId",
+          COUNT(DISTINCT pp."ID_uzytkownik") as "likeCount",
+          CASE WHEN pp_current."ID_playlisty" IS NOT NULL THEN true ELSE false END as "isFavorite"
+        FROM "Playlista" p
+        JOIN "Uzytkownik" u ON p."ID_uzytkownik" = u."ID_uzytkownik"
+        LEFT JOIN "PolubieniaPlaylist" pp ON p."ID_playlisty" = pp."ID_playlisty"
+        LEFT JOIN "PolubieniaPlaylist" pp_current ON p."ID_playlisty" = pp_current."ID_playlisty" AND pp_current."ID_uzytkownik" = ${userId}
+        WHERE p."ID_playlisty" = ${playlistId}
+        GROUP BY p."ID_playlisty", p."nazwa_playlisty", p."imageFilename", p."imagePath", p."imageMimetype", p."imageSize", u."nick", p."ID_uzytkownik", pp_current."ID_playlisty"
+      `;
+    } else {
+      // For non-authenticated users - no favorite status
+      playlist = await sql`
+        SELECT 
+          p."ID_playlisty" as "id",
+          p."nazwa_playlisty" as "name",
+          p."imageFilename",
+          p."imagePath",
+          p."imageMimetype",
+          p."imageSize",
+          u."nick" as "createdBy",
+          p."ID_uzytkownik" as "ownerId",
+          COUNT(DISTINCT pp."ID_uzytkownik") as "likeCount",
+          false as "isFavorite"
+        FROM "Playlista" p
+        JOIN "Uzytkownik" u ON p."ID_uzytkownik" = u."ID_uzytkownik"
+        LEFT JOIN "PolubieniaPlaylist" pp ON p."ID_playlisty" = pp."ID_playlisty"
+        WHERE p."ID_playlisty" = ${playlistId}
+        GROUP BY p."ID_playlisty", p."nazwa_playlisty", p."imageFilename", p."imagePath", p."imageMimetype", p."imageSize", u."nick", p."ID_uzytkownik"
+      `;
+    }
     
     if (playlist.length === 0) {
       res.status(404).json({ error: 'Playlista nie istnieje' });
       return;
     }
     
-    // Check if user has access to this playlist (owner or public access)
     const playlistData = playlist[0];
-    const isOwner = playlistData.ownerId === userId;
-    
-    // For now, all playlists are accessible, but you can add privacy logic here
+    // isOwner is false for non-authenticated users or if the user is not the owner
+    const isOwner = userId ? playlistData.ownerId === userId : false;
     
     // Get songs in the playlist, ordered by kolejnosc
     const songs = await sql`
@@ -179,8 +227,8 @@ router.get('/:playlistId', async (req: Request, res: Response): Promise<void> =>
   }
 });
 
-// Create a new playlist
-router.post('/', async (req: Request, res: Response): Promise<void> => {
+// Create a new playlist - requires authentication
+router.post('/', authenticate, async (req: Request, res: Response): Promise<void> => {
   try {
     const userId = req.userId;
     const { name } = req.body;
@@ -222,8 +270,8 @@ router.post('/', async (req: Request, res: Response): Promise<void> => {
   }
 });
 
-// Update a playlist name
-router.put('/:playlistId', async (req: Request, res: Response): Promise<void> => {
+// Update a playlist name - requires authentication
+router.put('/:playlistId', authenticate, async (req: Request, res: Response): Promise<void> => {
   try {
     const userId = req.userId;
     const playlistId = Number(req.params.playlistId);
@@ -268,8 +316,8 @@ router.put('/:playlistId', async (req: Request, res: Response): Promise<void> =>
   }
 });
 
-// Endpoint do przesyłania obrazów playlist
-router.post('/:playlistId/image', playlistImageUpload.single('image'), async (req: RequestWithFile, res: Response): Promise<void> => {
+// Endpoint do przesyłania obrazów playlist - requires authentication
+router.post('/:playlistId/image', authenticate, playlistImageUpload.single('image'), async (req: RequestWithFile, res: Response): Promise<void> => {
   try {
     const userId = req.userId;
     const playlistId = Number(req.params.playlistId);
@@ -390,10 +438,9 @@ router.post('/:playlistId/image', playlistImageUpload.single('image'), async (re
   }
 });
 
-// Endpoint do wyświetlania obrazów playlist
+// Endpoint do wyświetlania obrazów playlist - accessible to all
 router.get('/:playlistId/image', async (req: Request, res: Response): Promise<void> => {
   try {
-    const userId = req.userId;
     const playlistId = Number(req.params.playlistId);
     
     if (isNaN(playlistId)) {
@@ -401,17 +448,17 @@ router.get('/:playlistId/image', async (req: Request, res: Response): Promise<vo
       return;
     }
     
-    // Check if playlist belongs to the user and get image info
+    // Get image info without checking ownership
     const result = await sql`
       SELECT "imagePath", "imageFilename", "imageMimetype"
       FROM "Playlista"
-      WHERE "ID_playlisty" = ${playlistId} AND "ID_uzytkownik" = ${userId}
+      WHERE "ID_playlisty" = ${playlistId}
     `;
     
     if (result.length === 0) {
       res.status(404).json({ 
         success: false,
-        message: 'Playlista nie istnieje lub nie należy do ciebie' 
+        message: 'Playlista nie istnieje' 
       });
       return;
     }
@@ -427,7 +474,7 @@ router.get('/:playlistId/image', async (req: Request, res: Response): Promise<vo
     const playlist = result[0];
     const filePath = playlist.imagePath;
     
-    // Sprawdź czy plik istnieje
+    // Check if file exists
     if (!fs.existsSync(filePath)) {
       res.status(404).json({ 
         success: false,
@@ -436,17 +483,17 @@ router.get('/:playlistId/image', async (req: Request, res: Response): Promise<vo
       return;
     }
     
-    // Pobierz statystyki pliku
+    // Get file stats
     const stat = fs.statSync(filePath);
     
-    // Ustaw odpowiednie nagłówki podobnie jak w fileRoutes i profileRoutes
+    // Set headers
     res.writeHead(200, {
       'Content-Length': stat.size,
       'Content-Type': playlist.imageMimetype || 'image/jpeg',
-      'Cache-Control': 'public, max-age=31536000' // Cache na rok
+      'Cache-Control': 'public, max-age=31536000' // Cache for a year
     });
     
-    // Wyślij plik
+    // Send file
     const fileStream = fs.createReadStream(filePath);
     fileStream.pipe(res);
     
@@ -459,8 +506,8 @@ router.get('/:playlistId/image', async (req: Request, res: Response): Promise<vo
   }
 });
 
-// Endpoint do usuwania obrazu playlisty
-router.delete('/:playlistId/image', async (req: Request, res: Response): Promise<void> => {
+// Endpoint do usuwania obrazu playlisty - requires authentication
+router.delete('/:playlistId/image', authenticate, async (req: Request, res: Response): Promise<void> => {
   try {
     const userId = req.userId;
     const playlistId = Number(req.params.playlistId);
@@ -516,8 +563,8 @@ router.delete('/:playlistId/image', async (req: Request, res: Response): Promise
   }
 });
 
-// Delete a playlist
-router.delete('/:playlistId', async (req: Request, res: Response): Promise<void> => {
+// Delete a playlist - requires authentication
+router.delete('/:playlistId', authenticate, async (req: Request, res: Response): Promise<void> => {
   try {
     const userId = req.userId;
     const playlistId = Number(req.params.playlistId);
@@ -572,8 +619,8 @@ router.delete('/:playlistId', async (req: Request, res: Response): Promise<void>
   }
 });
 
-// Add a song to the playlist
-router.post('/:playlistId/songs', async (req: Request, res: Response): Promise<void> => {
+// Add a song to the playlist - requires authentication
+router.post('/:playlistId/songs', authenticate, async (req: Request, res: Response): Promise<void> => {
   try {
     const userId = req.userId;
     const playlistId = Number(req.params.playlistId);
@@ -653,8 +700,8 @@ router.post('/:playlistId/songs', async (req: Request, res: Response): Promise<v
   }
 });
 
-// Remove a song from the playlist
-router.delete('/:playlistId/songs/:songId', async (req: Request, res: Response): Promise<void> => {
+// Remove a song from the playlist - requires authentication
+router.delete('/:playlistId/songs/:songId', authenticate, async (req: Request, res: Response): Promise<void> => {
   try {
     const userId = req.userId;
     const playlistId = Number(req.params.playlistId);
@@ -713,8 +760,8 @@ router.delete('/:playlistId/songs/:songId', async (req: Request, res: Response):
   }
 });
 
-// Update the order of songs in a playlist
-router.put('/:playlistId/order', async (req: Request, res: Response): Promise<void> => {
+// Update the order of songs in a playlist - requires authentication
+router.put('/:playlistId/order', authenticate, async (req: Request, res: Response): Promise<void> => {
   try {
     const userId = req.userId;
     const playlistId = Number(req.params.playlistId);
@@ -761,10 +808,10 @@ router.put('/:playlistId/order', async (req: Request, res: Response): Promise<vo
   }
 });
 
-// Get all songs in a specific playlist
+// Get all songs in a specific playlist - accessible to all
 router.get('/:playlistId/songs', async (req: Request, res: Response): Promise<void> => {
   try {
-    const userId = req.userId;
+    const userId = req.userId; // May be undefined for non-authenticated users
     const playlistId = Number(req.params.playlistId);
     
     if (isNaN(playlistId)) {
@@ -806,11 +853,14 @@ router.get('/:playlistId/songs', async (req: Request, res: Response): Promise<vo
       ORDER BY pu."kolejnosc"
     `;
     
+    // isOwner is false for non-authenticated users or if the user is not the owner
+    const isOwner = userId ? playlist[0].ownerId === userId : false;
+    
     res.status(200).json({ 
       songs,
       playlistInfo: {
         createdBy: playlist[0].createdBy,
-        isOwner: playlist[0].ownerId === userId
+        isOwner
       }
     });
     
@@ -820,8 +870,8 @@ router.get('/:playlistId/songs', async (req: Request, res: Response): Promise<vo
   }
 });
 
-// Get all liked playlists for the current user
-router.get('/favorites/all', async (req: Request, res: Response): Promise<void> => {
+// Get all liked playlists for the current user - requires authentication
+router.get('/favorites/all', authenticate, async (req: Request, res: Response): Promise<void> => {
   try {
     const userId = req.userId;
 
