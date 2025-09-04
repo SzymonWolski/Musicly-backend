@@ -1,6 +1,6 @@
 import { Request, Response, Router } from 'express';
 import { sql } from 'bun';
-import { authenticate } from '../middleware/authMiddleware';
+import { authenticate, optionalAuthenticate } from '../middleware/authMiddleware';
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
@@ -42,7 +42,7 @@ const playlistImageUpload = multer({
 });
 
 // Get all playlists - with optional filter for current user only
-router.get('/', async (req: Request, res: Response): Promise<void> => {
+router.get('/', optionalAuthenticate, async (req: Request, res: Response): Promise<void> => {
   try {
     const userId = req.userId; // This may be undefined for non-authenticated users
     const { myOnly } = req.query; // Query parameter to filter only user's playlists

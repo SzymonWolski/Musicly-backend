@@ -42,3 +42,38 @@ export const authenticate = (req: Request, res: Response, next: NextFunction): v
     res.status(401).json({ error: 'Niepoprawny token autoryzacyjny' });
   }
 };
+
+// New middleware: authenticate if token exists, but don't require it
+export const optionalAuthenticate = (req: Request, res: Response, next: NextFunction): void => {
+  try {
+    // Get token from Authorization header
+    const authHeader = req.headers.authorization;
+    
+    // If no token is provided, just continue without setting userId
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      next();
+      return;
+    }
+    
+    // Extract the token
+    const token = authHeader.split(' ')[1];
+    
+    try {
+      // Verify and decode token
+      const decoded = jwt.verify(token, process.env.JWT_ACCESS_SECRET || 'jakis_sekret') as DecodedToken;
+      
+      // Set user ID if token is valid
+      req.userId = decoded.userId;
+      res.locals.userId = decoded.userId;
+    } catch (tokenError) {
+      // If token verification fails, just continue without userId
+      console.log('Optional authentication: Invalid token, continuing as guest');
+    }
+    
+    next();
+  } catch (error) {
+    // In case of any other errors, continue as unauthenticated
+    console.error('Error in optional authentication:', error);
+    next();
+  }
+};
