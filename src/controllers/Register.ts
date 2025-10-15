@@ -1,5 +1,7 @@
-import { sql } from 'bun';
 import { Request, Response } from 'express';
+import { PrismaClient } from '@prisma/client';
+
+const prisma = new PrismaClient();
 
 interface RegisterRequestBody {
   nick: string;
@@ -29,7 +31,6 @@ export const register = async (req: Request, res: Response): Promise<void> => {
   const {nick, email, password }: RegisterRequestBody = req.body;
   const errors: ValidationErrors = {};
 
-  // 1. Dodaj walidację danych wejściowych
   if (!nick || !email || !password) {
     res.status(400).json({ 
       success: false, 
@@ -42,18 +43,24 @@ export const register = async (req: Request, res: Response): Promise<void> => {
 
   try {
     // Sprawdź unikalność nazwy użytkownika
-    const nickCheck = await sql`
-      SELECT * FROM "Uzytkownik" WHERE nick = ${nick}
-    `;
-    if (nickCheck.length > 0) {
+    const nickCheck = await prisma.uzytkownik.findFirst({
+      where: {
+        nick: nick
+      }
+    });
+    
+    if (nickCheck) {
       errors.nick = 'Nazwa użytkownika jest już zajęta';
     }
 
     // Sprawdź unikalność emaila
-    const emailCheck = await sql`
-      SELECT * FROM "Uzytkownik" WHERE email = ${email}
-    `;
-    if (emailCheck.length > 0) {
+    const emailCheck = await prisma.uzytkownik.findFirst({
+      where: {
+        email: email
+      }
+    });
+    
+    if (emailCheck) {
       errors.email = 'Email jest już zarejestrowany';
     }
 
@@ -70,20 +77,29 @@ export const register = async (req: Request, res: Response): Promise<void> => {
       cost: saltRounds
     });
 
-    // 2. Debugowanie wartości przed wstawieniem
     console.log('Wartości do wstawienia:', { email, nick, hashedPassword });
 
-    // 3. Poprawione zapytanie SQL z szczegółowo określoną składnią
-    const newUser = await sql`
-      INSERT INTO "Uzytkownik" (email, nick, haslo) 
-      VALUES (${email || ''}, ${nick || ''}, ${hashedPassword || ''}) 
-      RETURNING "ID_uzytkownik" as id, nick, email
-    `;
+    const newUser = await prisma.uzytkownik.create({
+      data: {
+        email: email,
+        nick: nick,
+        haslo: hashedPassword
+      },
+      select: {
+        ID_uzytkownik: true,
+        nick: true,
+        email: true
+      }
+    });
 
     res.json({ 
       success: true,
       message: 'Rejestracja zakończona sukcesem',
-      user: newUser[0] as UserData
+      user: {
+        id: newUser.ID_uzytkownik,
+        nick: newUser.nick,
+        email: newUser.email
+      }
     });
 
   } catch (error: unknown) {
@@ -92,5 +108,7 @@ export const register = async (req: Request, res: Response): Promise<void> => {
       success: false,
       message: 'Wystąpił błąd podczas rejestracji'
     });
+  } finally {
+    await prisma.$disconnect();
   }
 };

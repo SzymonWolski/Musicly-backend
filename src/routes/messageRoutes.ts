@@ -1,7 +1,8 @@
 import { Request, Response, Router } from 'express';
-import { sql } from 'bun';
+import { PrismaClient } from '@prisma/client';
 import { authenticate } from '../middleware/authMiddleware';
 
+const prisma = new PrismaClient();
 const router = Router();
 
 // Apply authentication middleware to all message routes
@@ -20,7 +21,7 @@ interface Message {
 // Get message history between current user and friend
 router.get('/:friendId', async (req: Request, res: Response): Promise<void> => {
   try {
-    const userId = req.userId;
+    const userId = Number(req.userId);
     const friendId = Number(req.params.friendId);
     
     // Validate friendId
@@ -30,36 +31,47 @@ router.get('/:friendId', async (req: Request, res: Response): Promise<void> => {
     }
 
     // Get messages between the two users (both sent and received)
-    const messages = await sql`
-      SELECT 
-        "ID_wiadomosci" as id,
-        "ID_nadawca" as sender,
-        "ID_odbiorca" as recipient,
-        "tresc" as content,
-        "data_wyslania" as timestamp,
-        "przeczytana" as read,
-        "klucz_timestamp" as keyTimestamp
-      FROM "Wiadomosci"
-      WHERE 
-        ("ID_nadawca" = ${userId} AND "ID_odbiorca" = ${friendId})
-        OR
-        ("ID_nadawca" = ${friendId} AND "ID_odbiorca" = ${userId})
-      ORDER BY "data_wyslania" ASC
-    `;
+    const messages = await prisma.wiadomosci.findMany({
+      where: {
+        OR: [
+          {
+            ID_nadawca: userId,
+            ID_odbiorca: friendId
+          },
+          {
+            ID_nadawca: friendId,
+            ID_odbiorca: userId
+          }
+        ]
+      },
+      orderBy: {
+        data_wyslania: 'asc'
+      }
+    });
 
     // Return messages with encrypted content and keyTimestamp for frontend decryption
-    const formattedMessages = messages.map((msg: any) => ({
-      ...msg,
-      keyTimestamp: Number(msg.keytimestamp) // Each message has its own timestamp
+    const formattedMessages = messages.map(msg => ({
+      id: msg.ID_wiadomosci,
+      sender: msg.ID_nadawca,
+      recipient: msg.ID_odbiorca,
+      content: msg.tresc,
+      timestamp: msg.data_wyslania.toISOString(),
+      read: msg.przeczytana,
+      keyTimestamp: Number(msg.klucz_timestamp)
     }));
 
     // Auto-mark received messages as read
     if (messages.length > 0) {
-      await sql`
-        UPDATE "Wiadomosci"
-        SET "przeczytana" = TRUE
-        WHERE "ID_odbiorca" = ${userId} AND "ID_nadawca" = ${friendId} AND "przeczytana" = FALSE
-      `;
+      await prisma.wiadomosci.updateMany({
+        where: {
+          ID_odbiorca: userId,
+          ID_nadawca: friendId,
+          przeczytana: false
+        },
+        data: {
+          przeczytana: true
+        }
+      });
     }
 
     res.status(200).json({ messages: formattedMessages });
@@ -73,7 +85,7 @@ router.get('/:friendId', async (req: Request, res: Response): Promise<void> => {
 // Check for new messages since a specified message ID  
 router.get('/:friendId/new', async (req: Request, res: Response): Promise<void> => {
   try {
-    const userId = req.userId;
+    const userId = Number(req.userId);
     const friendId = Number(req.params.friendId);
     const afterId = Number(req.query.after || 0);
     
@@ -84,39 +96,50 @@ router.get('/:friendId/new', async (req: Request, res: Response): Promise<void> 
     }
 
     // Get only messages newer than the specified ID
-    const newMessages = await sql`
-      SELECT 
-        "ID_wiadomosci" as id,
-        "ID_nadawca" as sender,
-        "ID_odbiorca" as recipient,
-        "tresc" as content,
-        "data_wyslania" as timestamp,
-        "przeczytana" as read,
-        "klucz_timestamp" as keyTimestamp
-      FROM "Wiadomosci"
-      WHERE 
-        (
-          ("ID_nadawca" = ${userId} AND "ID_odbiorca" = ${friendId})
-          OR
-          ("ID_nadawca" = ${friendId} AND "ID_odbiorca" = ${userId})
-        )
-        AND "ID_wiadomosci" > ${afterId}
-      ORDER BY "data_wyslania" ASC
-    `;
+    const newMessages = await prisma.wiadomosci.findMany({
+      where: {
+        ID_wiadomosci: {
+          gt: afterId
+        },
+        OR: [
+          {
+            ID_nadawca: userId,
+            ID_odbiorca: friendId
+          },
+          {
+            ID_nadawca: friendId,
+            ID_odbiorca: userId
+          }
+        ]
+      },
+      orderBy: {
+        data_wyslania: 'asc'
+      }
+    });
 
     // Return messages with encrypted content and keyTimestamp for frontend decryption
-    const formattedMessages = newMessages.map((msg: any) => ({
-      ...msg,
-      keyTimestamp: Number(msg.keytimestamp) // Each message has its own timestamp
+    const formattedMessages = newMessages.map(msg => ({
+      id: msg.ID_wiadomosci,
+      sender: msg.ID_nadawca,
+      recipient: msg.ID_odbiorca,
+      content: msg.tresc,
+      timestamp: msg.data_wyslania.toISOString(),
+      read: msg.przeczytana,
+      keyTimestamp: Number(msg.klucz_timestamp)
     }));
 
     // Auto-mark received messages as read
     if (newMessages.length > 0) {
-      await sql`
-        UPDATE "Wiadomosci"
-        SET "przeczytana" = TRUE
-        WHERE "ID_odbiorca" = ${userId} AND "ID_nadawca" = ${friendId} AND "przeczytana" = FALSE
-      `;
+      await prisma.wiadomosci.updateMany({
+        where: {
+          ID_odbiorca: userId,
+          ID_nadawca: friendId,
+          przeczytana: false
+        },
+        data: {
+          przeczytana: true
+        }
+      });
     }
 
     res.status(200).json({ messages: formattedMessages });
@@ -130,7 +153,7 @@ router.get('/:friendId/new', async (req: Request, res: Response): Promise<void> 
 // Send a new message
 router.post('/send', async (req: Request, res: Response): Promise<void> => {
   try {
-    const senderId = req.userId;
+    const senderId = Number(req.userId);
     const { recipientId, encryptedContent, keyTimestamp } = req.body;
     
     // Validate input
@@ -146,49 +169,40 @@ router.post('/send', async (req: Request, res: Response): Promise<void> => {
     }
 
     // Validate recipient exists
-    const recipient = await sql`
-      SELECT "ID_uzytkownik" FROM "Uzytkownik"
-      WHERE "ID_uzytkownik" = ${Number(recipientId)}
-    `;
+    const recipient = await prisma.uzytkownik.findUnique({
+      where: {
+        ID_uzytkownik: Number(recipientId)
+      }
+    });
     
-    if (recipient.length === 0) {
+    if (!recipient) {
       res.status(404).json({ error: 'Odbiorca nie istnieje' });
       return;
     }
 
     // Create the message with encrypted content from frontend
-    const result = await sql`
-      INSERT INTO "Wiadomosci" (
-        "ID_nadawca",
-        "ID_odbiorca",
-        "tresc",
-        "data_wyslania",
-        "przeczytana",
-        "klucz_timestamp"
-      )
-      VALUES (
-        ${senderId},
-        ${Number(recipientId)},
-        ${encryptedContent},
-        CURRENT_TIMESTAMP,
-        FALSE,
-        ${keyTimestamp}
-      )
-      RETURNING 
-        "ID_wiadomosci" as id,
-        "ID_nadawca" as sender,
-        "ID_odbiorca" as recipient,
-        "tresc" as content,
-        "data_wyslania" as timestamp,
-        "przeczytana" as read,
-        "klucz_timestamp" as keyTimestamp
-    `;
+    const newMessage = await prisma.wiadomosci.create({
+      data: {
+        ID_nadawca: senderId,
+        ID_odbiorca: Number(recipientId),
+        tresc: encryptedContent,
+        przeczytana: false,
+        klucz_timestamp: BigInt(keyTimestamp)
+      }
+    });
 
     // Return the created message with encrypted content and keyTimestamp
-    const newMessage = result[0];
-    newMessage.keyTimestamp = keyTimestamp; // Return the timestamp for this specific message
+    const messageResponse = {
+      id: newMessage.ID_wiadomosci,
+      sender: newMessage.ID_nadawca,
+      recipient: newMessage.ID_odbiorca,
+      content: newMessage.tresc,
+      timestamp: newMessage.data_wyslania.toISOString(),
+      read: newMessage.przeczytana,
+      keyTimestamp: Number(newMessage.klucz_timestamp)
+    };
     
-    res.status(201).json({ message: newMessage });
+    res.status(201).json({ message: messageResponse });
     
   } catch (error) {
     console.error('Error sending message:', error);
@@ -199,7 +213,7 @@ router.post('/send', async (req: Request, res: Response): Promise<void> => {
 // Mark messages as read
 router.put('/read/:messageId', async (req: Request, res: Response): Promise<void> => {
   try {
-    const userId = req.userId;
+    const userId = Number(req.userId);
     const messageId = Number(req.params.messageId);
     
     // Validate messageId
@@ -209,29 +223,32 @@ router.put('/read/:messageId', async (req: Request, res: Response): Promise<void
     }
 
     // Check if the message exists and is addressed to the current user
-    const message = await sql`
-      SELECT "ID_wiadomosci", "ID_odbiorca"
-      FROM "Wiadomosci"
-      WHERE "ID_wiadomosci" = ${messageId}
-    `;
+    const message = await prisma.wiadomosci.findUnique({
+      where: {
+        ID_wiadomosci: messageId
+      }
+    });
     
-    if (message.length === 0) {
+    if (!message) {
       res.status(404).json({ error: 'Wiadomość nie istnieje' });
       return;
     }
 
     // Only allow the recipient to mark messages as read
-    if (message[0].ID_odbiorca !== userId) {
+    if (message.ID_odbiorca !== userId) {
       res.status(403).json({ error: 'Nie masz uprawnień do oznaczenia tej wiadomości jako przeczytanej' });
       return;
     }
 
     // Mark the message as read
-    await sql`
-      UPDATE "Wiadomosci"
-      SET "przeczytana" = TRUE
-      WHERE "ID_wiadomosci" = ${messageId}
-    `;
+    await prisma.wiadomosci.update({
+      where: {
+        ID_wiadomosci: messageId
+      },
+      data: {
+        przeczytana: true
+      }
+    });
 
     res.status(200).json({ success: true });
     

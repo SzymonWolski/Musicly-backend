@@ -1,9 +1,10 @@
 // src/controllers/login.ts
 import { Request, Response } from 'express';
 import { body, validationResult } from 'express-validator';
-import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
-import { sql } from 'bun';
+import { PrismaClient } from '@prisma/client';
+
+const prisma = new PrismaClient();
 
 interface UserData {
   id: number;
@@ -28,15 +29,21 @@ export const login = async (req: Request, res: Response): Promise<void> => {
   const { email, password } = req.body;
 
   try {
-    // 1. Pobierz użytkownika z bazy danych używając Bun.sql
-    const users = await sql`
-      SELECT "ID_uzytkownik" as id, email, haslo as password, "isAdmin" as isadmin, nick, 
-             "profileImagePath" as "profileImagePath"
-      FROM "Uzytkownik" 
-      WHERE email = ${email}
-    `;
+    const user = await prisma.uzytkownik.findFirst({
+      where: {
+        email: email
+      },
+      select: {
+        ID_uzytkownik: true,
+        email: true,
+        haslo: true,
+        nick: true,
+        isAdmin: true,
+        profileImagePath: true
+      }
+    });
 
-    if (users.length === 0) {
+    if (!user) {
       res.status(401).json({
         success: false,
         message: 'Nieprawidłowy email lub hasło'
@@ -44,12 +51,20 @@ export const login = async (req: Request, res: Response): Promise<void> => {
       return;
     }
 
-    const user = users[0] as UserData;
+    // Mapowanie danych do oczekiwanej struktury
+    const userData: UserData = {
+      id: user.ID_uzytkownik,
+      email: user.email,
+      password: user.haslo,
+      nick: user.nick,
+      isadmin: user.isAdmin,
+      profileImagePath: user.profileImagePath ?? undefined
+    };
 
     // 2. Weryfikacja hasła używając Bun.password
     const isPasswordValid = await Bun.password.verify(
       password, 
-      user.password,
+      userData.password,
       "bcrypt"
     );
     
@@ -63,18 +78,18 @@ export const login = async (req: Request, res: Response): Promise<void> => {
 
     // 3. Generowanie tokena JWT
     const token = jwt.sign(
-      { userId: user.id },
+      { userId: userData.id },
       process.env.JWT_ACCESS_SECRET!,
       { expiresIn: '20h' }
     );
 
     // 4. Zwrócenie odpowiedzi
-    const { password: _, ...userWithoutPassword } = user;
+    const { password: _, ...userWithoutPassword } = userData;
     
     // Dodaj domyślne zdjęcie profilowe jeśli użytkownik go nie posiada
     const userResponse = {
       ...userWithoutPassword,
-      profileImagePath: user.profileImagePath || '/uploads/user-images/default-profile.jpg'
+      profileImagePath: userData.profileImagePath || '/uploads/user-images/default-profile.jpg'
     };
     
     res.json({

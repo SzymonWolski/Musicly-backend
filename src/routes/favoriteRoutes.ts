@@ -1,32 +1,52 @@
 import { Request, Response, Router } from 'express';
-import { sql } from 'bun';
+import { PrismaClient } from '@prisma/client';
 import { authenticate } from '../middleware/authMiddleware';
 
+const prisma = new PrismaClient();
 const router = Router();
 
-// Apply authentication middleware to all favorite routes
 router.use(authenticate);
 
-// Get all favorites for the current user
 router.get('/', async (req: Request, res: Response): Promise<void> => {
   try {
-    const userId = req.userId;
-
-    // Get all favorite songs for the user
-    const favorites = await sql`
-      SELECT 
-        p."ID_piosenki" as "songId",
-        p."data_polubienia" as "likedAt",
-        u."nazwa_utworu" as "songName",
-        a."kryptonim_artystyczny" as "artistName"
-      FROM "Polubienia" p
-      JOIN "Utwor" u ON p."ID_piosenki" = u."ID_utworu"
-      JOIN "Autorzy" a ON u."ID_autora" = a."ID_autora"
-      WHERE p."ID_uzytkownik" = ${userId}
-      ORDER BY p."data_polubienia" DESC
-    `;
+    const userId = Number(req.userId);
     
-    res.status(200).json({ favorites });
+    if (isNaN(userId)) {
+      res.status(401).json({ error: 'Nieprawidłowe ID użytkownika' });
+      return;
+    }
+
+    const favorites = await prisma.polubienia.findMany({
+      where: {
+        ID_uzytkownik: userId,
+      },
+      select: {
+        ID_piosenki: true,
+        data_polubienia: true,
+        Utwor: {
+          select: {
+            nazwa_utworu: true,
+            Autor: {
+              select: {
+                kryptonim_artystyczny: true
+              }
+            }
+          }
+        }
+      },
+      orderBy: {
+        data_polubienia: 'desc'
+      }
+    });
+    
+    const formattedFavorites = favorites.map(fav => ({
+      songId: fav.ID_piosenki,
+      likedAt: fav.data_polubienia,
+      songName: fav.Utwor.nazwa_utworu,
+      artistName: fav.Utwor.Autor.kryptonim_artystyczny
+    }));
+    
+    res.status(200).json({ favorites: formattedFavorites });
     
   } catch (error) {
     console.error('Error fetching favorites:', error);
@@ -34,10 +54,15 @@ router.get('/', async (req: Request, res: Response): Promise<void> => {
   }
 });
 
-// Add a song to favorites
 router.post('/', async (req: Request, res: Response): Promise<void> => {
   try {
-    const userId = req.userId;
+    const userId = Number(req.userId);
+    
+    if (isNaN(userId)) {
+      res.status(401).json({ error: 'Nieprawidłowe ID użytkownika' });
+      return;
+    }
+    
     const { songId } = req.body;
     
     if (!songId) {
@@ -45,36 +70,40 @@ router.post('/', async (req: Request, res: Response): Promise<void> => {
       return;
     }
     
-    // Check if the song exists
-    const song = await sql`
-      SELECT "ID_utworu" FROM "Utwor"
-      WHERE "ID_utworu" = ${Number(songId)}
-    `;
+    const song = await prisma.utwor.findUnique({
+      where: {
+        ID_utworu: Number(songId)
+      }
+    });
     
-    if (song.length === 0) {
+    if (!song) {
       res.status(404).json({ error: 'Utwór nie istnieje' });
       return;
     }
     
-    // Check if the song is already in favorites
-    const existingFavorite = await sql`
-      SELECT "ID_piosenki" FROM "Polubienia"
-      WHERE "ID_piosenki" = ${Number(songId)} AND "ID_uzytkownik" = ${userId}
-    `;
+    const existingFavorite = await prisma.polubienia.findUnique({
+      where: {
+        ID_piosenki_ID_uzytkownik: {
+          ID_piosenki: Number(songId),
+          ID_uzytkownik: userId
+        }
+      }
+    });
     
-    if (existingFavorite.length > 0) {
+    if (existingFavorite) {
       res.status(409).json({ error: 'Utwór jest już w ulubionych' });
       return;
     }
     
-    // Get the current date/time in ISO string format
     const currentDate = new Date().toISOString();
     
-    // Add the song to favorites
-    await sql`
-      INSERT INTO "Polubienia" ("ID_piosenki", "ID_uzytkownik", "data_polubienia")
-      VALUES (${Number(songId)}, ${userId}, ${currentDate})
-    `;
+    await prisma.polubienia.create({
+      data: {
+        ID_piosenki: Number(songId),
+        ID_uzytkownik: userId,
+        data_polubienia: currentDate
+      }
+    });
     
     res.status(201).json({ 
       success: true,
@@ -92,10 +121,15 @@ router.post('/', async (req: Request, res: Response): Promise<void> => {
   }
 });
 
-// Remove a song from favorites
 router.delete('/:songId', async (req: Request, res: Response): Promise<void> => {
   try {
-    const userId = req.userId;
+    const userId = Number(req.userId);
+    
+    if (isNaN(userId)) {
+      res.status(401).json({ error: 'Nieprawidłowe ID użytkownika' });
+      return;
+    }
+    
     const songId = Number(req.params.songId);
     
     if (isNaN(songId)) {
@@ -103,22 +137,28 @@ router.delete('/:songId', async (req: Request, res: Response): Promise<void> => 
       return;
     }
     
-    // Check if the favorite exists
-    const favorite = await sql`
-      SELECT "ID_piosenki" FROM "Polubienia"
-      WHERE "ID_piosenki" = ${songId} AND "ID_uzytkownik" = ${userId}
-    `;
+    const favorite = await prisma.polubienia.findUnique({
+      where: {
+        ID_piosenki_ID_uzytkownik: {
+          ID_piosenki: songId,
+          ID_uzytkownik: userId
+        }
+      }
+    });
     
-    if (favorite.length === 0) {
+    if (!favorite) {
       res.status(404).json({ error: 'Utwór nie jest w ulubionych' });
       return;
     }
     
-    // Remove the song from favorites
-    await sql`
-      DELETE FROM "Polubienia"
-      WHERE "ID_piosenki" = ${songId} AND "ID_uzytkownik" = ${userId}
-    `;
+    await prisma.polubienia.delete({
+      where: {
+        ID_piosenki_ID_uzytkownik: {
+          ID_piosenki: songId,
+          ID_uzytkownik: userId
+        }
+      }
+    });
     
     res.status(200).json({
       success: true,
@@ -131,35 +171,66 @@ router.delete('/:songId', async (req: Request, res: Response): Promise<void> => 
   }
 });
 
-// Get all favorite playlists for the current user
 router.get('/playlists', async (req: Request, res: Response): Promise<void> => {
   try {
-    const userId = req.userId;
-
-    // Get all favorite playlists for the user
-    const favoritePlaylists = await sql`
-      SELECT 
-        pp."ID_playlisty" as "playlistId",
-        pp."data_polubienia" as "likedAt",
-        p."nazwa_playlisty" as "playlistName",
-        u."nick" as "createdBy",
-        p."imageFilename",
-        p."imagePath",
-        p."imageMimetype",
-        p."imageSize",
-        COUNT(DISTINCT pu."ID_utworu") as "songCount",
-        COUNT(DISTINCT pp_all."ID_uzytkownik") as "likeCount"
-      FROM "PolubieniaPlaylist" pp
-      JOIN "Playlista" p ON pp."ID_playlisty" = p."ID_playlisty"
-      JOIN "Uzytkownik" u ON p."ID_uzytkownik" = u."ID_uzytkownik"
-      LEFT JOIN "PlaylistaUtwor" pu ON p."ID_playlisty" = pu."ID_playlisty"
-      LEFT JOIN "PolubieniaPlaylist" pp_all ON p."ID_playlisty" = pp_all."ID_playlisty"
-      WHERE pp."ID_uzytkownik" = ${userId}
-      GROUP BY pp."ID_playlisty", pp."data_polubienia", p."nazwa_playlisty", u."nick", p."imageFilename", p."imagePath", p."imageMimetype", p."imageSize"
-      ORDER BY pp."data_polubienia" DESC
-    `;
+    const userId = Number(req.userId);
     
-    res.status(200).json({ favoritePlaylists });
+    if (isNaN(userId)) {
+      res.status(401).json({ error: 'Nieprawidłowe ID użytkownika' });
+      return;
+    }
+
+    const favoritePlaylists = await prisma.polubieniaPlaylist.findMany({
+      where: {
+        ID_uzytkownik: userId
+      },
+      select: {
+        ID_playlisty: true,
+        data_polubienia: true,
+        Playlista: {
+          select: {
+            nazwa_playlisty: true,
+            imageFilename: true,
+            imagePath: true,
+            imageMimetype: true,
+            imageSize: true,
+            Uzytkownik: {
+              select: {
+                nick: true
+              }
+            },
+            Utwory: {
+              select: {
+                ID_utworu: true
+              }
+            },
+            PolubieniaPlaylist: {
+              select: {
+                ID_uzytkownik: true
+              }
+            }
+          }
+        }
+      },
+      orderBy: {
+        data_polubienia: 'desc'
+      }
+    });
+
+    const formattedPlaylists = favoritePlaylists.map(fp => ({
+      playlistId: fp.ID_playlisty,
+      likedAt: fp.data_polubienia,
+      playlistName: fp.Playlista.nazwa_playlisty,
+      createdBy: fp.Playlista.Uzytkownik.nick,
+      imageFilename: fp.Playlista.imageFilename,
+      imagePath: fp.Playlista.imagePath,
+      imageMimetype: fp.Playlista.imageMimetype,
+      imageSize: fp.Playlista.imageSize,
+      songCount: fp.Playlista.Utwory.length,
+      likeCount: fp.Playlista.PolubieniaPlaylist.length
+    }));
+    
+    res.status(200).json({ favoritePlaylists: formattedPlaylists });
     
   } catch (error) {
     console.error('Error fetching favorite playlists:', error);
@@ -167,10 +238,15 @@ router.get('/playlists', async (req: Request, res: Response): Promise<void> => {
   }
 });
 
-// Add a playlist to favorites
 router.post('/playlists', async (req: Request, res: Response): Promise<void> => {
   try {
-    const userId = req.userId;
+    const userId = Number(req.userId);
+    
+    if (isNaN(userId)) {
+      res.status(401).json({ error: 'Nieprawidłowe ID użytkownika' });
+      return;
+    }
+    
     const { playlistId } = req.body;
     
     if (!playlistId) {
@@ -178,36 +254,40 @@ router.post('/playlists', async (req: Request, res: Response): Promise<void> => 
       return;
     }
     
-    // Check if the playlist exists
-    const playlist = await sql`
-      SELECT "ID_playlisty" FROM "Playlista"
-      WHERE "ID_playlisty" = ${Number(playlistId)}
-    `;
+    const playlist = await prisma.playlista.findUnique({
+      where: {
+        ID_playlisty: Number(playlistId)
+      }
+    });
     
-    if (playlist.length === 0) {
+    if (!playlist) {
       res.status(404).json({ error: 'Playlista nie istnieje' });
       return;
     }
     
-    // Check if the playlist is already in favorites
-    const existingFavorite = await sql`
-      SELECT "ID_playlisty" FROM "PolubieniaPlaylist"
-      WHERE "ID_playlisty" = ${Number(playlistId)} AND "ID_uzytkownik" = ${userId}
-    `;
+    const existingFavorite = await prisma.polubieniaPlaylist.findUnique({
+      where: {
+        ID_playlisty_ID_uzytkownik: {
+          ID_playlisty: Number(playlistId),
+          ID_uzytkownik: userId
+        }
+      }
+    });
     
-    if (existingFavorite.length > 0) {
+    if (existingFavorite) {
       res.status(409).json({ error: 'Playlista jest już w ulubionych' });
       return;
     }
     
-    // Get the current date/time in ISO string format
     const currentDate = new Date().toISOString();
     
-    // Add the playlist to favorites
-    await sql`
-      INSERT INTO "PolubieniaPlaylist" ("ID_playlisty", "ID_uzytkownik", "data_polubienia")
-      VALUES (${Number(playlistId)}, ${userId}, ${currentDate})
-    `;
+    await prisma.polubieniaPlaylist.create({
+      data: {
+        ID_playlisty: Number(playlistId),
+        ID_uzytkownik: userId,
+        data_polubienia: currentDate
+      }
+    });
     
     res.status(201).json({ 
       success: true,
@@ -225,10 +305,15 @@ router.post('/playlists', async (req: Request, res: Response): Promise<void> => 
   }
 });
 
-// Remove a playlist from favorites
 router.delete('/playlists/:playlistId', async (req: Request, res: Response): Promise<void> => {
   try {
-    const userId = req.userId;
+    const userId = Number(req.userId);
+    
+    if (isNaN(userId)) {
+      res.status(401).json({ error: 'Nieprawidłowe ID użytkownika' });
+      return;
+    }
+    
     const playlistId = Number(req.params.playlistId);
     
     if (isNaN(playlistId)) {
@@ -236,22 +321,28 @@ router.delete('/playlists/:playlistId', async (req: Request, res: Response): Pro
       return;
     }
     
-    // Check if the favorite exists
-    const favorite = await sql`
-      SELECT "ID_playlisty" FROM "PolubieniaPlaylist"
-      WHERE "ID_playlisty" = ${playlistId} AND "ID_uzytkownik" = ${userId}
-    `;
+    const favorite = await prisma.polubieniaPlaylist.findUnique({
+      where: {
+        ID_playlisty_ID_uzytkownik: {
+          ID_playlisty: playlistId,
+          ID_uzytkownik: userId
+        }
+      }
+    });
     
-    if (favorite.length === 0) {
+    if (!favorite) {
       res.status(404).json({ error: 'Playlista nie jest w ulubionych' });
       return;
     }
     
-    // Remove the playlist from favorites
-    await sql`
-      DELETE FROM "PolubieniaPlaylist"
-      WHERE "ID_playlisty" = ${playlistId} AND "ID_uzytkownik" = ${userId}
-    `;
+    await prisma.polubieniaPlaylist.delete({
+      where: {
+        ID_playlisty_ID_uzytkownik: {
+          ID_playlisty: playlistId,
+          ID_uzytkownik: userId
+        }
+      }
+    });
     
     res.status(200).json({
       success: true,
