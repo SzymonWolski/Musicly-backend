@@ -12,9 +12,6 @@
     "@types/sharp": "^0.32.0",
     "typescript": "^5.8.3"
   },
-  "prisma": {
-    "seed": "bun run prisma/seed.ts"
-  },
   "scripts": {
     "swagger": "bun run src/swagger.ts",
     "prod": "bun run dist/server.js",
