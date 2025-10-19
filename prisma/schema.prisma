@@ -31,6 +31,9 @@ model Uzytkownik {
   // Relacje dla wiadomości
   WyslaneWiadomosci         Wiadomosci[] @relation("wyslaneWiadomosci")
   OtrzymaneWiadomosci       Wiadomosci[] @relation("otrzymaneWiadomosci")
+  
+  // Relacja dla dostępu do playlist
+  DostepDoPlaylist          PlaylistaDostep[]
 }
 
 model Autorzy {
@@ -115,9 +118,14 @@ model Playlista {
   imageMimetype   String?
   imageSize       Int?
 
+  // Pola prywatności
+  isPrivate       Boolean @default(false)
+  allowFriendsAccess Boolean @default(true) // Czy znajomi mogą mieć dostęp do prywatnej playlisty
+
   Uzytkownik      Uzytkownik @relation(fields: [ID_uzytkownik], references: [ID_uzytkownik])
   PolubieniaPlaylist PolubieniaPlaylist[]
   Utwory          PlaylistaUtwor[]
+  PlaylistaDostep PlaylistaDostep[]
 }
 
 model PlaylistaUtwor {
@@ -163,4 +171,16 @@ model UtworyLog {
   nazwa_utworu    String?   // Nazwa utworu, której dotyczyła akcja
   akcja           String    // "dodano" lub "usunieto"
   data_akcji      DateTime  @default(now())
+}
+
+model PlaylistaDostep {
+  ID_dostep       Int       @id @default(autoincrement())
+  ID_playlisty    Int       // Playlista do której udzielany jest dostęp
+  ID_uzytkownik   Int       // Użytkownik któremu udzielany jest dostęp
+  data_dodania    DateTime  @default(now())
+  
+  Playlista       Playlista  @relation(fields: [ID_playlisty], references: [ID_playlisty])
+  Uzytkownik      Uzytkownik @relation(fields: [ID_uzytkownik], references: [ID_uzytkownik])
+  
+  @@unique([ID_playlisty, ID_uzytkownik])
 }

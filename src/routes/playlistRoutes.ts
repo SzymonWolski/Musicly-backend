@@ -65,6 +65,8 @@ router.get('/', optionalAuthenticate, async (req: Request, res: Response): Promi
           p."imagePath",
           p."imageMimetype",
           p."imageSize",
+          p."isPrivate",
+          p."allowFriendsAccess",
           u."nick" as "createdBy",
           COUNT(DISTINCT pu."ID_utworu") as "songCount",
           COUNT(DISTINCT pp."ID_uzytkownik") as "likeCount",
@@ -75,7 +77,7 @@ router.get('/', optionalAuthenticate, async (req: Request, res: Response): Promi
         LEFT JOIN "PolubieniaPlaylist" pp ON p."ID_playlisty" = pp."ID_playlisty"
         LEFT JOIN "PolubieniaPlaylist" pp_current ON p."ID_playlisty" = pp_current."ID_playlisty" AND pp_current."ID_uzytkownik" = ${userId}
         WHERE p."ID_uzytkownik" = ${userId}
-        GROUP BY p."ID_playlisty", p."nazwa_playlisty", p."imageFilename", p."imagePath", p."imageMimetype", p."imageSize", u."nick", pp_current."ID_playlisty"
+        GROUP BY p."ID_playlisty", p."nazwa_playlisty", p."imageFilename", p."imagePath", p."imageMimetype", p."imageSize", p."isPrivate", p."allowFriendsAccess", u."nick", pp_current."ID_playlisty"
         ORDER BY p."ID_playlisty"
       `;
     } else {
@@ -89,6 +91,8 @@ router.get('/', optionalAuthenticate, async (req: Request, res: Response): Promi
             p."imagePath",
             p."imageMimetype",
             p."imageSize",
+            p."isPrivate",
+            p."allowFriendsAccess",
             u."nick" as "createdBy",
             COUNT(DISTINCT pu."ID_utworu") as "songCount",
             COUNT(DISTINCT pp."ID_uzytkownik") as "likeCount",
@@ -98,11 +102,19 @@ router.get('/', optionalAuthenticate, async (req: Request, res: Response): Promi
           LEFT JOIN "PlaylistaUtwor" pu ON p."ID_playlisty" = pu."ID_playlisty"
           LEFT JOIN "PolubieniaPlaylist" pp ON p."ID_playlisty" = pp."ID_playlisty"
           LEFT JOIN "PolubieniaPlaylist" pp_current ON p."ID_playlisty" = pp_current."ID_playlisty" AND pp_current."ID_uzytkownik" = ${userId}
-          GROUP BY p."ID_playlisty", p."nazwa_playlisty", p."imageFilename", p."imagePath", p."imageMimetype", p."imageSize", u."nick", pp_current."ID_playlisty"
+          LEFT JOIN "Znajomi" f1 ON (p."ID_uzytkownika" = f1."ID_uzytkownik1" AND f1."ID_uzytkownik2" = ${userId} AND f1."status" = 'accepted')
+          LEFT JOIN "Znajomi" f2 ON (p."ID_uzytkownika" = f2."ID_uzytkownik2" AND f2."ID_uzytkownik1" = ${userId} AND f2."status" = 'accepted')
+          LEFT JOIN "PlaylistaDostep" pd ON (p."ID_playlisty" = pd."ID_playlisty" AND pd."ID_uzytkownik" = ${userId})
+          WHERE 
+            (p."isPrivate" = false) OR 
+            (p."ID_uzytkownik" = ${userId}) OR
+            (p."isPrivate" = true AND pd."ID_playlisty" IS NOT NULL) OR
+            (p."isPrivate" = true AND p."allowFriendsAccess" = true AND (f1."ID_uzytkownik1" IS NOT NULL OR f2."ID_uzytkownik2" IS NOT NULL))
+          GROUP BY p."ID_playlisty", p."nazwa_playlisty", p."imageFilename", p."imagePath", p."imageMimetype", p."imageSize", p."isPrivate", p."allowFriendsAccess", u."nick", pp_current."ID_playlisty"
           ORDER BY p."ID_playlisty"
         `;
       } else {
-        // For non-authenticated users - no favorite status
+        // For non-authenticated users - show only public playlists
         playlists = await sql`
           SELECT 
             p."ID_playlisty" as "id",
@@ -111,6 +123,8 @@ router.get('/', optionalAuthenticate, async (req: Request, res: Response): Promi
             p."imagePath",
             p."imageMimetype",
             p."imageSize",
+            p."isPrivate",
+            p."allowFriendsAccess",
             u."nick" as "createdBy",
             COUNT(DISTINCT pu."ID_utworu") as "songCount",
             COUNT(DISTINCT pp."ID_uzytkownik") as "likeCount",
@@ -119,7 +133,8 @@ router.get('/', optionalAuthenticate, async (req: Request, res: Response): Promi
           JOIN "Uzytkownik" u ON p."ID_uzytkownik" = u."ID_uzytkownik"
           LEFT JOIN "PlaylistaUtwor" pu ON p."ID_playlisty" = pu."ID_playlisty"
           LEFT JOIN "PolubieniaPlaylist" pp ON p."ID_playlisty" = pp."ID_playlisty"
-          GROUP BY p."ID_playlisty", p."nazwa_playlisty", p."imageFilename", p."imagePath", p."imageMimetype", p."imageSize", u."nick"
+          WHERE p."isPrivate" = false
+          GROUP BY p."ID_playlisty", p."nazwa_playlisty", p."imageFilename", p."imagePath", p."imageMimetype", p."imageSize", p."isPrivate", p."allowFriendsAccess", u."nick"
           ORDER BY p."ID_playlisty"
         `;
       }
@@ -134,7 +149,7 @@ router.get('/', optionalAuthenticate, async (req: Request, res: Response): Promi
 });
 
 // Get a specific playlist with songs
-router.get('/:playlistId', async (req: Request, res: Response): Promise<void> => {
+router.get('/:playlistId', optionalAuthenticate, async (req: Request, res: Response): Promise<void> => {
   try {
     const userId = req.userId; // May be undefined for non-authenticated users
     const playlistId = Number(req.params.playlistId);
@@ -144,11 +159,64 @@ router.get('/:playlistId', async (req: Request, res: Response): Promise<void> =>
       return;
     }
     
-    // Get playlist details - handling both authenticated and non-authenticated users
-    let playlist;
+    // Get basic playlist details first to check privacy settings
+    const playlistBasic = await sql`
+      SELECT 
+        p."ID_playlisty",
+        p."ID_uzytkownik" as "ownerId", 
+        p."isPrivate",
+        p."allowFriendsAccess"
+      FROM "Playlista" p
+      WHERE p."ID_playlisty" = ${playlistId}
+    `;
+    
+    if (playlistBasic.length === 0) {
+      res.status(404).json({ error: 'Playlista nie istnieje' });
+      return;
+    }
+    
+    const playlist = playlistBasic[0];
+    
+    // Check access to private playlist
+    if (playlist.isPrivate === true) {
+      if (!userId) {
+        // Non-authenticated user cannot access private playlist
+        res.status(403).json({ error: 'Brak dostępu do prywatnej playlisty' });
+        return;
+      }
+      
+      if (playlist.ownerId !== userId) {
+        // Check if user has explicit access
+        const hasAccess = await sql`
+          SELECT "ID_dostep" FROM "PlaylistaDostep"
+          WHERE "ID_playlisty" = ${playlistId} AND "ID_uzytkownik" = ${userId}
+        `;
+        
+        if (hasAccess.length === 0 && playlist.allowFriendsAccess === true) {
+          // Check if user is a friend of the owner
+          const isFriend = await sql`
+            SELECT "ID_znajomych" FROM "Znajomi"
+            WHERE (("ID_uzytkownik1" = ${playlist.ownerId} AND "ID_uzytkownik2" = ${userId}) OR
+                  ("ID_uzytkownik1" = ${userId} AND "ID_uzytkownik2" = ${playlist.ownerId}))
+            AND "status" = 'accepted'
+          `;
+          
+          if (isFriend.length === 0) {
+            res.status(403).json({ error: 'Brak dostępu do prywatnej playlisty' });
+            return;
+          }
+        } else if (hasAccess.length === 0) {
+          res.status(403).json({ error: 'Brak dostępu do prywatnej playlisty' });
+          return;
+        }
+      }
+    }
+    
+    // User has access - get full playlist details
+    let playlistDetails;
     if (userId) {
       // For authenticated users - include favorite status
-      playlist = await sql`
+      playlistDetails = await sql`
         SELECT 
           p."ID_playlisty" as "id",
           p."nazwa_playlisty" as "name",
@@ -156,6 +224,8 @@ router.get('/:playlistId', async (req: Request, res: Response): Promise<void> =>
           p."imagePath",
           p."imageMimetype",
           p."imageSize",
+          p."isPrivate",
+          p."allowFriendsAccess",
           u."nick" as "createdBy",
           p."ID_uzytkownik" as "ownerId",
           COUNT(DISTINCT pp."ID_uzytkownik") as "likeCount",
@@ -165,11 +235,11 @@ router.get('/:playlistId', async (req: Request, res: Response): Promise<void> =>
         LEFT JOIN "PolubieniaPlaylist" pp ON p."ID_playlisty" = pp."ID_playlisty"
         LEFT JOIN "PolubieniaPlaylist" pp_current ON p."ID_playlisty" = pp_current."ID_playlisty" AND pp_current."ID_uzytkownik" = ${userId}
         WHERE p."ID_playlisty" = ${playlistId}
-        GROUP BY p."ID_playlisty", p."nazwa_playlisty", p."imageFilename", p."imagePath", p."imageMimetype", p."imageSize", u."nick", p."ID_uzytkownik", pp_current."ID_playlisty"
+        GROUP BY p."ID_playlisty", p."nazwa_playlisty", p."imageFilename", p."imagePath", p."imageMimetype", p."imageSize", p."isPrivate", p."allowFriendsAccess", u."nick", p."ID_uzytkownik", pp_current."ID_playlisty"
       `;
     } else {
       // For non-authenticated users - no favorite status
-      playlist = await sql`
+      playlistDetails = await sql`
         SELECT 
           p."ID_playlisty" as "id",
           p."nazwa_playlisty" as "name",
@@ -177,6 +247,8 @@ router.get('/:playlistId', async (req: Request, res: Response): Promise<void> =>
           p."imagePath",
           p."imageMimetype",
           p."imageSize",
+          p."isPrivate",
+          p."allowFriendsAccess",
           u."nick" as "createdBy",
           p."ID_uzytkownik" as "ownerId",
           COUNT(DISTINCT pp."ID_uzytkownik") as "likeCount",
@@ -185,16 +257,11 @@ router.get('/:playlistId', async (req: Request, res: Response): Promise<void> =>
         JOIN "Uzytkownik" u ON p."ID_uzytkownik" = u."ID_uzytkownik"
         LEFT JOIN "PolubieniaPlaylist" pp ON p."ID_playlisty" = pp."ID_playlisty"
         WHERE p."ID_playlisty" = ${playlistId}
-        GROUP BY p."ID_playlisty", p."nazwa_playlisty", p."imageFilename", p."imagePath", p."imageMimetype", p."imageSize", u."nick", p."ID_uzytkownik"
+        GROUP BY p."ID_playlisty", p."nazwa_playlisty", p."imageFilename", p."imagePath", p."imageMimetype", p."imageSize", p."isPrivate", p."allowFriendsAccess", u."nick", p."ID_uzytkownik"
       `;
     }
     
-    if (playlist.length === 0) {
-      res.status(404).json({ error: 'Playlista nie istnieje' });
-      return;
-    }
-    
-    const playlistData = playlist[0];
+    const playlistData = playlistDetails[0];
     // isOwner is false for non-authenticated users or if the user is not the owner
     const isOwner = userId ? playlistData.ownerId === userId : false;
     
@@ -231,7 +298,7 @@ router.get('/:playlistId', async (req: Request, res: Response): Promise<void> =>
 router.post('/', authenticate, async (req: Request, res: Response): Promise<void> => {
   try {
     const userId = req.userId;
-    const { name } = req.body;
+    const { name, isPrivate, allowFriendsAccess } = req.body;
     
     if (!name || typeof name !== 'string') {
       res.status(400).json({ error: 'Nazwa playlisty jest wymagana' });
@@ -243,10 +310,14 @@ router.post('/', authenticate, async (req: Request, res: Response): Promise<void
       SELECT "nick" FROM "Uzytkownik" WHERE "ID_uzytkownik" = ${userId}
     `;
     
-    // Create the playlist
+    // Set default values for privacy settings if not provided
+    const privacyStatus = isPrivate === true;
+    const friendsAccess = allowFriendsAccess === undefined ? true : allowFriendsAccess === true;
+    
+    // Create the playlist with privacy settings
     const result = await sql`
-      INSERT INTO "Playlista" ("ID_uzytkownik", "nazwa_playlisty")
-      VALUES (${userId}, ${name})
+      INSERT INTO "Playlista" ("ID_uzytkownik", "nazwa_playlisty", "isPrivate", "allowFriendsAccess")
+      VALUES (${userId}, ${name}, ${privacyStatus}, ${friendsAccess})
       RETURNING "ID_playlisty" as "id"
     `;
     
@@ -260,7 +331,9 @@ router.post('/', authenticate, async (req: Request, res: Response): Promise<void
         songCount: 0,
         likeCount: 0,
         isOwner: true,
-        isFavorite: false
+        isFavorite: false,
+        isPrivate: privacyStatus,
+        allowFriendsAccess: friendsAccess
       }
     });
     
@@ -270,20 +343,15 @@ router.post('/', authenticate, async (req: Request, res: Response): Promise<void
   }
 });
 
-// Update a playlist name - requires authentication
+// Update a playlist - requires authentication
 router.put('/:playlistId', authenticate, async (req: Request, res: Response): Promise<void> => {
   try {
     const userId = req.userId;
     const playlistId = Number(req.params.playlistId);
-    const { name } = req.body;
+    const { name, isPrivate, allowFriendsAccess } = req.body;
     
     if (isNaN(playlistId)) {
       res.status(400).json({ error: 'Nieprawidłowe ID playlisty' });
-      return;
-    }
-    
-    if (!name || typeof name !== 'string') {
-      res.status(400).json({ error: 'Nazwa playlisty jest wymagana' });
       return;
     }
     
@@ -298,21 +366,545 @@ router.put('/:playlistId', authenticate, async (req: Request, res: Response): Pr
       return;
     }
     
-    // Update playlist name
-    await sql`
-      UPDATE "Playlista"
-      SET "nazwa_playlisty" = ${name}
-      WHERE "ID_playlisty" = ${playlistId}
-    `;
+    // Build update query dynamically
+    let hasUpdates = false;
+    
+    if (name !== undefined && typeof name === 'string') {
+      await sql`
+        UPDATE "Playlista"
+        SET "nazwa_playlisty" = ${name}
+        WHERE "ID_playlisty" = ${playlistId}
+      `;
+      hasUpdates = true;
+    }
+    
+    if (isPrivate !== undefined) {
+      await sql`
+        UPDATE "Playlista"
+        SET "isPrivate" = ${isPrivate === true}
+        WHERE "ID_playlisty" = ${playlistId}
+      `;
+      hasUpdates = true;
+    }
+    
+    if (allowFriendsAccess !== undefined) {
+      await sql`
+        UPDATE "Playlista"
+        SET "allowFriendsAccess" = ${allowFriendsAccess === true}
+        WHERE "ID_playlisty" = ${playlistId}
+      `;
+      hasUpdates = true;
+    }
+    
+    if (!hasUpdates) {
+      res.status(400).json({ error: 'Brak danych do aktualizacji' });
+      return;
+    }
     
     res.status(200).json({
       success: true,
-      message: 'Nazwa playlisty została zaktualizowana'
+      message: 'Playlista została zaktualizowana'
     });
     
   } catch (error) {
     console.error('Error updating playlist:', error);
     res.status(500).json({ error: 'Wystąpił błąd podczas aktualizacji playlisty' });
+  }
+});
+
+// Update playlist privacy settings - requires authentication
+router.put('/:playlistId/privacy', authenticate, async (req: Request, res: Response): Promise<void> => {
+  try {
+    const userId = req.userId;
+    const playlistId = Number(req.params.playlistId);
+    const { isPrivate, allowFriendsAccess } = req.body;
+    
+    if (isNaN(playlistId)) {
+      res.status(400).json({ error: 'Nieprawidłowe ID playlisty' });
+      return;
+    }
+    
+    if (isPrivate === undefined && allowFriendsAccess === undefined) {
+      res.status(400).json({ error: 'Musisz określić przynajmniej jedno ustawienie prywatności' });
+      return;
+    }
+    
+    // Check if playlist exists and belongs to the user
+    const playlist = await sql`
+      SELECT "ID_playlisty" FROM "Playlista"
+      WHERE "ID_playlisty" = ${playlistId} AND "ID_uzytkownik" = ${userId}
+    `;
+    
+    if (playlist.length === 0) {
+      res.status(404).json({ error: 'Playlista nie istnieje lub nie należy do ciebie' });
+      return;
+    }
+    
+    // Update privacy settings
+    if (isPrivate !== undefined && allowFriendsAccess !== undefined) {
+      await sql`
+        UPDATE "Playlista"
+        SET "isPrivate" = ${isPrivate === true},
+            "allowFriendsAccess" = ${allowFriendsAccess === true}
+        WHERE "ID_playlisty" = ${playlistId}
+      `;
+    } else if (isPrivate !== undefined) {
+      await sql`
+        UPDATE "Playlista"
+        SET "isPrivate" = ${isPrivate === true}
+        WHERE "ID_playlisty" = ${playlistId}
+      `;
+    } else if (allowFriendsAccess !== undefined) {
+      await sql`
+        UPDATE "Playlista"
+        SET "allowFriendsAccess" = ${allowFriendsAccess === true}
+        WHERE "ID_playlisty" = ${playlistId}
+      `;
+    }
+    
+    res.status(200).json({
+      success: true,
+      message: 'Ustawienia prywatności playlisty zostały zaktualizowane',
+      settings: {
+        isPrivate: isPrivate !== undefined ? isPrivate === true : undefined,
+        allowFriendsAccess: allowFriendsAccess !== undefined ? allowFriendsAccess === true : undefined
+      }
+    });
+    
+  } catch (error) {
+    console.error('Error updating playlist privacy:', error);
+    res.status(500).json({ error: 'Wystąpił błąd podczas aktualizacji ustawień prywatności' });
+  }
+});
+
+// Get users who have access to a playlist - requires authentication, owner only
+router.get('/:playlistId/access', authenticate, async (req: Request, res: Response): Promise<void> => {
+  try {
+    const userId = req.userId;
+    const playlistId = Number(req.params.playlistId);
+    
+    if (isNaN(playlistId)) {
+      res.status(400).json({ error: 'Nieprawidłowe ID playlisty' });
+      return;
+    }
+    
+    // Check if playlist exists and belongs to the user
+    const playlist = await sql`
+      SELECT "ID_playlisty", "isPrivate", "allowFriendsAccess" FROM "Playlista"
+      WHERE "ID_playlisty" = ${playlistId} AND "ID_uzytkownik" = ${userId}
+    `;
+    
+    if (playlist.length === 0) {
+      res.status(404).json({ error: 'Playlista nie istnieje lub nie należy do ciebie' });
+      return;
+    }
+    
+    // Get users with explicit access
+    const usersWithAccess = await sql`
+      SELECT u."ID_uzytkownik" as "id", u."nick", pd."data_dodania" as "addedAt"
+      FROM "PlaylistaDostep" pd
+      JOIN "Uzytkownik" u ON pd."ID_uzytkownik" = u."ID_uzytkownik"
+      WHERE pd."ID_playlisty" = ${playlistId}
+      ORDER BY pd."data_dodania" DESC
+    `;
+    
+    // If playlist allows friends access, get friends list
+    let friendsWithAccess = [];
+    if (playlist[0].isPrivate && playlist[0].allowFriendsAccess) {
+      friendsWithAccess = await sql`
+        SELECT 
+          u."ID_uzytkownik" as "id", 
+          u."nick",
+          CASE
+            WHEN f1."ID_uzytkownik1" IS NOT NULL THEN f1."data_dodania"
+            ELSE f2."data_dodania"
+          END as "friendSince"
+        FROM "Uzytkownik" u
+        LEFT JOIN "Znajomi" f1 ON (u."ID_uzytkownik" = f1."ID_uzytkownik2" AND f1."ID_uzytkownik1" = ${userId} AND f1."status" = 'accepted')
+        LEFT JOIN "Znajomi" f2 ON (u."ID_uzytkownik" = f2."ID_uzytkownik1" AND f2."ID_uzytkownik2" = ${userId} AND f2."status" = 'accepted')
+        WHERE f1."ID_znajomych" IS NOT NULL OR f2."ID_znajomych" IS NOT NULL
+        ORDER BY u."nick"
+      `;
+    }
+    
+    res.status(200).json({
+      success: true,
+      usersWithAccess,
+      friendsWithAccess,
+      privacySettings: {
+        isPrivate: playlist[0].isPrivate,
+        allowFriendsAccess: playlist[0].allowFriendsAccess
+      }
+    });
+    
+  } catch (error) {
+    console.error('Error getting playlist access list:', error);
+    res.status(500).json({ error: 'Wystąpił błąd podczas pobierania listy dostępu' });
+  }
+});
+
+// Grant access to a user for a playlist - requires authentication, owner only
+router.post('/:playlistId/access', authenticate, async (req: Request, res: Response): Promise<void> => {
+  try {
+    const userId = req.userId;
+    const playlistId = Number(req.params.playlistId);
+    const { targetUserId } = req.body;
+    
+    if (isNaN(playlistId)) {
+      res.status(400).json({ error: 'Nieprawidłowe ID playlisty' });
+      return;
+    }
+    
+    if (!targetUserId || isNaN(Number(targetUserId))) {
+      res.status(400).json({ error: 'Nieprawidłowe ID użytkownika' });
+      return;
+    }
+    
+    // Check if playlist exists and belongs to the user
+    const playlist = await sql`
+      SELECT "ID_playlisty", "isPrivate" FROM "Playlista"
+      WHERE "ID_playlisty" = ${playlistId} AND "ID_uzytkownik" = ${userId}
+    `;
+    
+    if (playlist.length === 0) {
+      res.status(404).json({ error: 'Playlista nie istnieje lub nie należy do ciebie' });
+      return;
+    }
+    
+    // Check if the playlist is private
+    if (!playlist[0].isPrivate) {
+      res.status(400).json({ error: 'Nie można dodać dostępu do publicznej playlisty' });
+      return;
+    }
+    
+    // Check if target user exists
+    const targetUser = await sql`
+      SELECT "ID_uzytkownik", "nick" FROM "Uzytkownik"
+      WHERE "ID_uzytkownik" = ${Number(targetUserId)}
+    `;
+    
+    if (targetUser.length === 0) {
+      res.status(404).json({ error: 'Użytkownik nie istnieje' });
+      return;
+    }
+    
+    // Check if access already exists
+    const existingAccess = await sql`
+      SELECT "ID_dostep" FROM "PlaylistaDostep"
+      WHERE "ID_playlisty" = ${playlistId} AND "ID_uzytkownik" = ${Number(targetUserId)}
+    `;
+    
+    if (existingAccess.length > 0) {
+      res.status(409).json({ error: 'Użytkownik już ma dostęp do tej playlisty' });
+      return;
+    }
+    
+    // Grant access
+    await sql`
+      INSERT INTO "PlaylistaDostep" ("ID_playlisty", "ID_uzytkownik")
+      VALUES (${playlistId}, ${Number(targetUserId)})
+    `;
+    
+    res.status(201).json({
+      success: true,
+      message: `Dostęp przyznany użytkownikowi ${targetUser[0].nick}`,
+      grantedTo: {
+        id: targetUser[0].id,
+        nick: targetUser[0].nick
+      }
+    });
+    
+  } catch (error) {
+    console.error('Error granting playlist access:', error);
+    res.status(500).json({ error: 'Wystąpił błąd podczas przyznawania dostępu do playlisty' });
+  }
+});
+
+// Revoke access from a user for a playlist - requires authentication, owner only
+router.delete('/:playlistId/access/:targetUserId', authenticate, async (req: Request, res: Response): Promise<void> => {
+  try {
+    const userId = req.userId;
+    const playlistId = Number(req.params.playlistId);
+    const targetUserId = Number(req.params.targetUserId);
+    
+    if (isNaN(playlistId) || isNaN(targetUserId)) {
+      res.status(400).json({ error: 'Nieprawidłowe ID playlisty lub użytkownika' });
+      return;
+    }
+    
+    // Check if playlist exists and belongs to the user
+    const playlist = await sql`
+      SELECT "ID_playlisty" FROM "Playlista"
+      WHERE "ID_playlisty" = ${playlistId} AND "ID_uzytkownik" = ${userId}
+    `;
+    
+    if (playlist.length === 0) {
+      res.status(404).json({ error: 'Playlista nie istnieje lub nie należy do ciebie' });
+      return;
+    }
+    
+    // Check if access exists
+    const existingAccess = await sql`
+      SELECT "ID_dostep" FROM "PlaylistaDostep"
+      WHERE "ID_playlisty" = ${playlistId} AND "ID_uzytkownik" = ${targetUserId}
+    `;
+    
+    if (existingAccess.length === 0) {
+      res.status(404).json({ error: 'Użytkownik nie ma bezpośredniego dostępu do tej playlisty' });
+      return;
+    }
+    
+    // Revoke access
+    await sql`
+      DELETE FROM "PlaylistaDostep"
+      WHERE "ID_playlisty" = ${playlistId} AND "ID_uzytkownik" = ${targetUserId}
+    `;
+    
+    res.status(200).json({
+      success: true,
+      message: 'Dostęp do playlisty został cofnięty'
+    });
+    
+  } catch (error) {
+    console.error('Error revoking playlist access:', error);
+    res.status(500).json({ error: 'Wystąpił błąd podczas cofania dostępu do playlisty' });
+  }
+});
+
+// Delete a playlist - requires authentication
+router.delete('/:playlistId', authenticate, async (req: Request, res: Response): Promise<void> => {
+  try {
+    const userId = req.userId;
+    const playlistId = Number(req.params.playlistId);
+    
+    if (isNaN(playlistId)) {
+      res.status(400).json({ error: 'Nieprawidłowe ID playlisty' });
+      return;
+    }
+    
+    // Check if playlist exists and belongs to the user, get image info
+    const playlist = await sql`
+      SELECT "ID_playlisty", "imagePath" FROM "Playlista"
+      WHERE "ID_playlisty" = ${playlistId} AND "ID_uzytkownik" = ${userId}
+    `;
+    
+    if (playlist.length === 0) {
+      res.status(404).json({ error: 'Playlista nie istnieje lub nie należy do ciebie' });
+      return;
+    }
+    
+    // Usuń obraz z dysku jeśli istnieje
+    if (playlist[0].imagePath && fs.existsSync(playlist[0].imagePath)) {
+      fs.unlinkSync(playlist[0].imagePath);
+    }
+    
+    // Delete all playlist favorites first (due to foreign key constraints)
+    await sql`
+      DELETE FROM "PolubieniaPlaylist"
+      WHERE "ID_playlisty" = ${playlistId}
+    `;
+    
+    // Delete all access permissions (for private playlists)
+    await sql`
+      DELETE FROM "PlaylistaDostep"
+      WHERE "ID_playlisty" = ${playlistId}
+    `;
+    
+    // Delete all playlist songs first (due to foreign key constraints)
+    await sql`
+      DELETE FROM "PlaylistaUtwor"
+      WHERE "ID_playlisty" = ${playlistId}
+    `;
+    
+    // Delete the playlist
+    await sql`
+      DELETE FROM "Playlista"
+      WHERE "ID_playlisty" = ${playlistId}
+    `;
+    
+    res.status(200).json({
+      success: true,
+      message: 'Playlista została usunięta'
+    });
+    
+  } catch (error) {
+    console.error('Error deleting playlist:', error);
+    res.status(500).json({ error: 'Wystąpił błąd podczas usuwania playlisty' });
+  }
+});
+
+// Get playlists shared with the current user - requires authentication
+router.get('/shared/with-me', authenticate, async (req: Request, res: Response): Promise<void> => {
+  try {
+    const userId = req.userId;
+    
+    // Get playlists explicitly shared with the user
+    const explicitShared = await sql`
+      SELECT 
+        p."ID_playlisty" as "id",
+        p."nazwa_playlisty" as "name",
+        p."imageFilename",
+        p."imagePath",
+        p."imageMimetype",
+        p."imageSize",
+        p."isPrivate",
+        p."allowFriendsAccess",
+        u."nick" as "createdBy",
+        u."ID_uzytkownik" as "ownerId",
+        COUNT(DISTINCT pu."ID_utworu") as "songCount",
+        COUNT(DISTINCT pp."ID_uzytkownik") as "likeCount",
+        CASE WHEN pp_current."ID_playlisty" IS NOT NULL THEN true ELSE false END as "isFavorite",
+        'explicit' as "accessType",
+        pd."data_dodania" as "sharedAt"
+      FROM "PlaylistaDostep" pd
+      JOIN "Playlista" p ON pd."ID_playlisty" = p."ID_playlisty"
+      JOIN "Uzytkownik" u ON p."ID_uzytkownik" = u."ID_uzytkownik"
+      LEFT JOIN "PlaylistaUtwor" pu ON p."ID_playlisty" = pu."ID_playlisty"
+      LEFT JOIN "PolubieniaPlaylist" pp ON p."ID_playlisty" = pp."ID_playlisty"
+      LEFT JOIN "PolubieniaPlaylist" pp_current ON p."ID_playlisty" = pp_current."ID_playlisty" AND pp_current."ID_uzytkownik" = ${userId}
+      WHERE pd."ID_uzytkownik" = ${userId} AND p."ID_uzytkownik" != ${userId}
+      GROUP BY p."ID_playlisty", p."nazwa_playlisty", p."imageFilename", p."imagePath", p."imageMimetype", p."imageSize", p."isPrivate", p."allowFriendsAccess", u."nick", u."ID_uzytkownik", pp_current."ID_playlisty", pd."data_dodania"
+    `;
+    
+    // Get playlists shared via friend relationship
+    const friendShared = await sql`
+      SELECT 
+        p."ID_playlisty" as "id",
+        p."nazwa_playlisty" as "name",
+        p."imageFilename",
+        p."imagePath",
+        p."imageMimetype",
+        p."imageSize",
+        p."isPrivate",
+        p."allowFriendsAccess",
+        u."nick" as "createdBy",
+        u."ID_uzytkownik" as "ownerId",
+        COUNT(DISTINCT pu."ID_utworu") as "songCount",
+        COUNT(DISTINCT pp."ID_uzytkownik") as "likeCount",
+        CASE WHEN pp_current."ID_playlisty" IS NOT NULL THEN true ELSE false END as "isFavorite",
+        'friend' as "accessType",
+        CASE 
+          WHEN f1."data_dodania" IS NOT NULL THEN f1."data_dodania"
+          ELSE f2."data_dodania"
+        END as "friendSince"
+      FROM "Playlista" p
+      JOIN "Uzytkownik" u ON p."ID_uzytkownik" = u."ID_uzytkownik"
+      LEFT JOIN "Znajomi" f1 ON (p."ID_uzytkownik" = f1."ID_uzytkownik1" AND f1."ID_uzytkownik2" = ${userId} AND f1."status" = 'accepted')
+      LEFT JOIN "Znajomi" f2 ON (p."ID_uzytkownik" = f2."ID_uzytkownik2" AND f2."ID_uzytkownik1" = ${userId} AND f2."status" = 'accepted')
+      LEFT JOIN "PlaylistaUtwor" pu ON p."ID_playlisty" = pu."ID_playlisty"
+      LEFT JOIN "PolubieniaPlaylist" pp ON p."ID_playlisty" = pp."ID_playlisty"
+      LEFT JOIN "PolubieniaPlaylist" pp_current ON p."ID_playlisty" = pp_current."ID_playlisty" AND pp_current."ID_uzytkownik" = ${userId}
+      LEFT JOIN "PlaylistaDostep" pd ON p."ID_playlisty" = pd."ID_playlisty" AND pd."ID_uzytkownik" = ${userId}
+      WHERE 
+        p."isPrivate" = true AND 
+        p."allowFriendsAccess" = true AND 
+        (f1."ID_znajomych" IS NOT NULL OR f2."ID_znajomych" IS NOT NULL) AND
+        p."ID_uzytkownik" != ${userId} AND
+        pd."ID_dostep" IS NULL
+      GROUP BY p."ID_playlisty", p."nazwa_playlisty", p."imageFilename", p."imagePath", p."imageMimetype", p."imageSize", p."isPrivate", p."allowFriendsAccess", u."nick", u."ID_uzytkownik", pp_current."ID_playlisty", f1."data_dodania", f2."data_dodania"
+    `;
+    
+    res.status(200).json({
+      success: true,
+      explicitShared,
+      friendShared
+    });
+    
+  } catch (error) {
+    console.error('Error fetching shared playlists:', error);
+    res.status(500).json({ error: 'Wystąpił błąd podczas pobierania udostępnionych playlist' });
+  }
+});
+
+// Toggle favorite status for a playlist - requires authentication
+router.post('/:playlistId/favorite', authenticate, async (req: Request, res: Response): Promise<void> => {
+  try {
+    const userId = req.userId;
+    const playlistId = Number(req.params.playlistId);
+    
+    if (isNaN(playlistId)) {
+      res.status(400).json({ error: 'Nieprawidłowe ID playlisty' });
+      return;
+    }
+    
+    // Check if playlist exists and if user has access
+    const playlistData = await sql`
+      SELECT 
+        p."ID_playlisty",
+        p."ID_uzytkownik" as "ownerId",
+        p."isPrivate",
+        p."allowFriendsAccess"
+      FROM "Playlista" p
+      WHERE p."ID_playlisty" = ${playlistId}
+    `;
+    
+    if (playlistData.length === 0) {
+      res.status(404).json({ error: 'Playlista nie istnieje' });
+      return;
+    }
+    
+    const playlist = playlistData[0];
+    
+    // Check if user has access to this playlist
+    if (playlist.isPrivate && playlist.ownerId !== userId) {
+      const hasAccess = await sql`
+        SELECT 1 FROM "PlaylistaDostep" 
+        WHERE "ID_playlisty" = ${playlistId} AND "ID_uzytkownik" = ${userId}
+      `;
+      
+      if (hasAccess.length === 0 && playlist.allowFriendsAccess) {
+        const isFriend = await sql`
+          SELECT 1 FROM "Znajomi"
+          WHERE (("ID_uzytkownik1" = ${playlist.ownerId} AND "ID_uzytkownik2" = ${userId}) OR
+                ("ID_uzytkownik1" = ${userId} AND "ID_uzytkownik2" = ${playlist.ownerId}))
+          AND "status" = 'accepted'
+        `;
+        
+        if (isFriend.length === 0) {
+          res.status(403).json({ error: 'Brak dostępu do tej playlisty' });
+          return;
+        }
+      } else if (hasAccess.length === 0) {
+        res.status(403).json({ error: 'Brak dostępu do tej playlisty' });
+        return;
+      }
+    }
+    
+    // Check if the playlist is already liked by the user
+    const existingLike = await sql`
+      SELECT "ID_playlisty", "data_polubienia" FROM "PolubieniaPlaylist"
+      WHERE "ID_playlisty" = ${playlistId} AND "ID_uzytkownik" = ${userId}
+    `;
+    
+    if (existingLike.length > 0) {
+      // Unlike the playlist
+      await sql`
+        DELETE FROM "PolubieniaPlaylist"
+        WHERE "ID_playlisty" = ${playlistId} AND "ID_uzytkownik" = ${userId}
+      `;
+      
+      res.status(200).json({
+        success: true,
+        isFavorite: false,
+        message: 'Playlista usunięta z polubionych'
+      });
+    } else {
+      // Like the playlist
+      const now = new Date().toISOString();
+      await sql`
+        INSERT INTO "PolubieniaPlaylist" ("ID_playlisty", "ID_uzytkownik", "data_polubienia")
+        VALUES (${playlistId}, ${userId}, ${now})
+      `;
+      
+      res.status(200).json({
+        success: true,
+        isFavorite: true,
+        message: 'Playlista dodana do polubionych'
+      });
+    }
+  } catch (error) {
+    console.error('Error toggling playlist favorite:', error);
+    res.status(500).json({ error: 'Wystąpił błąd podczas aktualizacji statusu polubienia' });
   }
 });
 
@@ -596,6 +1188,12 @@ router.delete('/:playlistId', authenticate, async (req: Request, res: Response):
       WHERE "ID_playlisty" = ${playlistId}
     `;
     
+    // Delete all access permissions (for private playlists)
+    await sql`
+      DELETE FROM "PlaylistaDostep"
+      WHERE "ID_playlisty" = ${playlistId}
+    `;
+    
     // Delete all playlist songs first (due to foreign key constraints)
     await sql`
       DELETE FROM "PlaylistaUtwor"
@@ -616,195 +1214,6 @@ router.delete('/:playlistId', authenticate, async (req: Request, res: Response):
   } catch (error) {
     console.error('Error deleting playlist:', error);
     res.status(500).json({ error: 'Wystąpił błąd podczas usuwania playlisty' });
-  }
-});
-
-// Add a song to the playlist - requires authentication
-router.post('/:playlistId/songs', authenticate, async (req: Request, res: Response): Promise<void> => {
-  try {
-    const userId = req.userId;
-    const playlistId = Number(req.params.playlistId);
-    const { songId } = req.body;
-    
-    if (isNaN(playlistId)) {
-      res.status(400).json({ error: 'Nieprawidłowe ID playlisty' });
-      return;
-    }
-    
-    if (!songId) {
-      res.status(400).json({ error: 'ID utworu jest wymagane' });
-      return;
-    }
-    
-    // Check if playlist exists and belongs to the user
-    const playlist = await sql`
-      SELECT "ID_playlisty" FROM "Playlista"
-      WHERE "ID_playlisty" = ${playlistId} AND "ID_uzytkownik" = ${userId}
-    `;
-    
-    if (playlist.length === 0) {
-      res.status(404).json({ error: 'Playlista nie istnieje lub nie należy do ciebie' });
-      return;
-    }
-    
-    // Check if song exists
-    const song = await sql`
-      SELECT "ID_utworu" FROM "Utwor"
-      WHERE "ID_utworu" = ${Number(songId)}
-    `;
-    
-    if (song.length === 0) {
-      res.status(404).json({ error: 'Utwór nie istnieje' });
-      return;
-    }
-    
-    // Check if the song is already in the playlist
-    const existingSong = await sql`
-      SELECT "ID_utworu" FROM "PlaylistaUtwor"
-      WHERE "ID_playlisty" = ${playlistId} AND "ID_utworu" = ${Number(songId)}
-    `;
-    
-    if (existingSong.length > 0) {
-      res.status(409).json({ error: 'Utwór jest już w playliście' });
-      return;
-    }
-    
-    // Get the highest kolejnosc in the playlist
-    const order = await sql`
-      SELECT MAX("kolejnosc") as "max_order" FROM "PlaylistaUtwor"
-      WHERE "ID_playlisty" = ${playlistId}
-    `;
-    
-    // If this is the first song, set kolejnosc to 1, otherwise increment the highest value
-    const nextOrder = order[0].max_order ? Number(order[0].max_order) + 1 : 1;
-    
-    // Add the song to the playlist
-    await sql`
-      INSERT INTO "PlaylistaUtwor" ("ID_playlisty", "ID_utworu", "kolejnosc")
-      VALUES (${playlistId}, ${Number(songId)}, ${nextOrder})
-    `;
-    
-    res.status(201).json({
-      success: true,
-      message: 'Utwór dodany do playlisty',
-      data: {
-        playlistId,
-        songId: Number(songId),
-        order: nextOrder
-      }
-    });
-    
-  } catch (error) {
-    console.error('Error adding song to playlist:', error);
-    res.status(500).json({ error: 'Wystąpił błąd podczas dodawania utworu do playlisty' });
-  }
-});
-
-// Remove a song from the playlist - requires authentication
-router.delete('/:playlistId/songs/:songId', authenticate, async (req: Request, res: Response): Promise<void> => {
-  try {
-    const userId = req.userId;
-    const playlistId = Number(req.params.playlistId);
-    const songId = Number(req.params.songId);
-    
-    if (isNaN(playlistId) || isNaN(songId)) {
-      res.status(400).json({ error: 'Nieprawidłowe ID playlisty lub utworu' });
-      return;
-    }
-    
-    // Check if playlist exists and belongs to the user
-    const playlist = await sql`
-      SELECT "ID_playlisty" FROM "Playlista"
-      WHERE "ID_playlisty" = ${playlistId} AND "ID_uzytkownik" = ${userId}
-    `;
-    
-    if (playlist.length === 0) {
-      res.status(404).json({ error: 'Playlista nie istnieje lub nie należy do ciebie' });
-      return;
-    }
-    
-    // Get the kolejnosc of the song to be removed
-    const songToRemove = await sql`
-      SELECT "kolejnosc" FROM "PlaylistaUtwor"
-      WHERE "ID_playlisty" = ${playlistId} AND "ID_utworu" = ${songId}
-    `;
-    
-    if (songToRemove.length === 0) {
-      res.status(404).json({ error: 'Utwór nie znajduje się w tej playliście' });
-      return;
-    }
-    
-    const removedOrder = Number(songToRemove[0].kolejnosc);
-    
-    // Remove the song from the playlist
-    await sql`
-      DELETE FROM "PlaylistaUtwor"
-      WHERE "ID_playlisty" = ${playlistId} AND "ID_utworu" = ${songId}
-    `;
-    
-    // Update kolejnosc for songs that came after the removed one
-    await sql`
-      UPDATE "PlaylistaUtwor"
-      SET "kolejnosc" = "kolejnosc" - 1
-      WHERE "ID_playlisty" = ${playlistId} AND "kolejnosc" > ${removedOrder}
-    `;
-    
-    res.status(200).json({
-      success: true,
-      message: 'Utwór usunięty z playlisty'
-    });
-    
-  } catch (error) {
-    console.error('Error removing song from playlist:', error);
-    res.status(500).json({ error: 'Wystąpił błąd podczas usuwania utworu z playlisty' });
-  }
-});
-
-// Update the order of songs in a playlist - requires authentication
-router.put('/:playlistId/order', authenticate, async (req: Request, res: Response): Promise<void> => {
-  try {
-    const userId = req.userId;
-    const playlistId = Number(req.params.playlistId);
-    const { songOrder } = req.body;
-    
-    if (isNaN(playlistId)) {
-      res.status(400).json({ error: 'Nieprawidłowe ID playlisty' });
-      return;
-    }
-    
-    if (!songOrder || !Array.isArray(songOrder)) {
-      res.status(400).json({ error: 'Lista porządkowa utworów jest wymagana' });
-      return;
-    }
-    
-    // Check if playlist exists and belongs to the user
-    const playlist = await sql`
-      SELECT "ID_playlisty" FROM "Playlista"
-      WHERE "ID_playlisty" = ${playlistId} AND "ID_uzytkownik" = ${userId}
-    `;
-    
-    if (playlist.length === 0) {
-      res.status(404).json({ error: 'Playlista nie istnieje lub nie należy do ciebie' });
-      return;
-    }
-    
-    // Update the order of songs in the playlist
-    for (let i = 0; i < songOrder.length; i++) {
-      await sql`
-        UPDATE "PlaylistaUtwor"
-        SET "kolejnosc" = ${i + 1}
-        WHERE "ID_playlisty" = ${playlistId} AND "ID_utworu" = ${songOrder[i]}
-      `;
-    }
-    
-    res.status(200).json({
-      success: true,
-      message: 'Kolejność utworów zaktualizowana'
-    });
-    
-  } catch (error) {
-    console.error('Error updating song order:', error);
-    res.status(500).json({ error: 'Wystąpił błąd podczas aktualizacji kolejności utworów' });
   }
 });
 

@@ -70,6 +70,10 @@ export const register = async (req: Request, res: Response): Promise<void> => {
       return;
     }
 
+    // sprawdź czy to pierwsze konto w tabeli — jeśli tak, nadaj uprawnienia admina
+    const existingUsersCount = await prisma.uzytkownik.count();
+    const makeAdmin = existingUsersCount === 0;
+
     // Hashowanie hasła
     const saltRounds = 10;
     const hashedPassword = await Bun.password.hash(password, {
@@ -83,7 +87,8 @@ export const register = async (req: Request, res: Response): Promise<void> => {
       data: {
         email: email,
         nick: nick,
-        haslo: hashedPassword
+        haslo: hashedPassword,
+        isAdmin: makeAdmin
       },
       select: {
         ID_uzytkownik: true,
