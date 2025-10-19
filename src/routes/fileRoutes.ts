@@ -4,10 +4,11 @@ import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
 import { v4 as uuidv4 } from 'uuid';
-import { sql } from 'bun';
+import { PrismaClient } from '@prisma/client';
 import * as musicMetadata from 'music-metadata';
 import sharp from 'sharp';
 
+const prisma = new PrismaClient();
 const router = Router();
 
 // Konfiguracja multer dla przechowywania plików audio
@@ -88,60 +89,42 @@ router.post('/upload', audioUpload.single('file'), async (req: RequestWithFile, 
     }
     
     // Sprawdź czy autor istnieje
-    let autorId;
-    const autorResult = await sql`
-      SELECT "ID_autora" FROM "Autorzy" 
-      WHERE kryptonim_artystyczny = ${kryptonim_artystyczny}
-    `;
+    let autor = await prisma.autorzy.findFirst({
+      where: {
+        kryptonim_artystyczny: kryptonim_artystyczny
+      }
+    });
     
-    if (autorResult.length === 0) {
-      // Autor nie istnieje, stwórz nowego
-      const nowyAutorResult = await sql`
-        INSERT INTO "Autorzy" (imie, nazwisko, kryptonim_artystyczny)
-        VALUES ('', '', ${kryptonim_artystyczny})
-        RETURNING "ID_autora"
-      `;
-      autorId = nowyAutorResult[0].ID_autora;
-    } else {
-      // Autor istnieje
-      autorId = autorResult[0].ID_autora;
+    // Jeśli autor nie istnieje, stwórz nowego
+    if (!autor) {
+      autor = await prisma.autorzy.create({
+        data: {
+          imie: '',
+          nazwisko: '',
+          kryptonim_artystyczny
+        }
+      });
     }
 
     // Pobierz czas trwania pliku audio automatycznie
     const filePath = path.join('/app/uploads/songs', req.file.filename);
     const metadata = await musicMetadata.parseFile(filePath);
 
-    // Zapisz informacje o utworze w bazie danych używając SQL, dopasowane do schematu tabeli
-    const result = await sql`
-      INSERT INTO "Utwor" (
-        nazwa_utworu,
-        data_wydania,
-        "ID_autora",
-        filename,
-        filepath,
-        mimetype,
-        filesize
-      ) VALUES (
-        ${nazwa_utworu || ''},
-        ${data_wydania || ''},
-        ${autorId}, 
-        ${req.file.filename || null},
-        ${`/app/uploads/songs/${req.file.filename}` || null},
-        ${req.file.mimetype || null},
-        ${req.file.size || null}
-      )
-      RETURNING "ID_utworu", nazwa_utworu, data_wydania, "ID_autora", 
-               filename, filepath, mimetype, filesize
-    `;
-    
-    const utwor = result[0];
-    
-    // Pobierz informacje o autorze do odpowiedzi
-    const autorInfo = await sql`
-      SELECT imie, nazwisko, kryptonim_artystyczny
-      FROM "Autorzy"
-      WHERE "ID_autora" = ${autorId}
-    `;
+    // Zapisz informacje o utworze w bazie danych
+    const utwor = await prisma.utwor.create({
+      data: {
+        nazwa_utworu: nazwa_utworu || '',
+        data_wydania: data_wydania || '',
+        ID_autora: autor.ID_autora,
+        filename: req.file.filename || null,
+        filepath: `/app/uploads/songs/${req.file.filename}` || null,
+        mimetype: req.file.mimetype || null,
+        filesize: req.file.size || null
+      },
+      include: {
+        Autor: true
+      }
+    });
     
     // Zwracamy informacje o przesłanym utworu wraz z informacją o autorze
     res.status(200).json({
@@ -149,7 +132,11 @@ router.post('/upload', audioUpload.single('file'), async (req: RequestWithFile, 
       message: 'Utwór przesłany pomyślnie',
       utwor: {
         ...utwor,
-        autor: autorInfo[0]
+        autor: {
+          imie: utwor.Autor.imie,
+          nazwisko: utwor.Autor.nazwisko,
+          kryptonim_artystyczny: utwor.Autor.kryptonim_artystyczny
+        }
       }
     });
   } catch (error) {
@@ -179,12 +166,11 @@ router.post('/upload-image/:utworId', imageUpload.single('image'), async (req: R
     }
 
     // Sprawdź czy utwór istnieje
-    const utworExists = await sql`
-      SELECT "ID_utworu" FROM "Utwor" 
-      WHERE "ID_utworu" = ${id}
-    `;
+    const utworExists = await prisma.utwor.findUnique({
+      where: { ID_utworu: id }
+    });
     
-    if (utworExists.length === 0) {
+    if (!utworExists) {
       fs.unlinkSync(path.join('/app/uploads/song-images', req.file.filename));
       res.status(404).json({
         success: false,
@@ -228,34 +214,35 @@ router.post('/upload-image/:utworId', imageUpload.single('image'), async (req: R
       fs.unlinkSync(tempFilePath);
 
       // Pobierz informacje o starym obrazie (jeśli istnieje)
-      const oldImageResult = await sql`
-        SELECT "imageFilename", "imagePath" FROM "Utwor" 
-        WHERE "ID_utworu" = ${id}
-      `;
-
-      // Usuń stary obraz jeśli istnieje
-      if (oldImageResult[0]?.imagePath && fs.existsSync(oldImageResult[0].imagePath)) {
-        fs.unlinkSync(oldImageResult[0].imagePath);
+      if (utworExists.imagePath && fs.existsSync(utworExists.imagePath)) {
+        fs.unlinkSync(utworExists.imagePath);
       }
 
       // Pobierz rozmiar nowego pliku
       const newFileStats = fs.statSync(finalFilePath);
 
       // Aktualizuj informacje o obrazie w bazie danych
-      const updatedUtwor = await sql`
-        UPDATE "Utwor" SET
-          "imageFilename" = ${finalFileName},
-          "imagePath" = ${finalFilePath},
-          "imageMimetype" = ${'image/jpeg'},
-          "imageSize" = ${newFileStats.size}
-        WHERE "ID_utworu" = ${id}
-        RETURNING "ID_utworu", "imageFilename", "imagePath", "imageMimetype", "imageSize"
-      `;
+      const updatedUtwor = await prisma.utwor.update({
+        where: { ID_utworu: id },
+        data: {
+          imageFilename: finalFileName,
+          imagePath: finalFilePath,
+          imageMimetype: 'image/jpeg',
+          imageSize: newFileStats.size
+        },
+        select: {
+          ID_utworu: true,
+          imageFilename: true, 
+          imagePath: true, 
+          imageMimetype: true, 
+          imageSize: true
+        }
+      });
 
       res.status(200).json({
         success: true,
         message: 'Obraz utworu przesłany pomyślnie',
-        image: updatedUtwor[0]
+        image: updatedUtwor
       });
 
     } catch (processingError) {
@@ -291,13 +278,16 @@ router.get('/image/:utworId', async (req: Request<{utworId: string}>, res: Respo
     const id = parseInt(utworId);
     
     // Pobierz informacje o obrazie z bazy danych
-    const result = await sql`
-      SELECT "imagePath", "imageFilename", "imageMimetype"
-      FROM "Utwor"
-      WHERE "ID_utworu" = ${id}
-    `;
+    const utwor = await prisma.utwor.findUnique({
+      where: { ID_utworu: id },
+      select: {
+        imagePath: true,
+        imageFilename: true,
+        imageMimetype: true
+      }
+    });
     
-    if (result.length === 0 || !result[0].imagePath) {
+    if (!utwor || !utwor.imagePath) {
       res.status(404).json({ 
         success: false,
         message: 'Obraz utworu nie istnieje' 
@@ -305,8 +295,7 @@ router.get('/image/:utworId', async (req: Request<{utworId: string}>, res: Respo
       return;
     }
     
-    const image = result[0];
-    const filePath = image.imagePath;
+    const filePath = utwor.imagePath;
     
     // Sprawdź czy plik istnieje
     if (!fs.existsSync(filePath)) {
@@ -318,7 +307,7 @@ router.get('/image/:utworId', async (req: Request<{utworId: string}>, res: Respo
     }
     
     // Ustaw odpowiednie nagłówki
-    res.setHeader('Content-Type', image.imageMimetype || 'image/jpeg');
+    res.setHeader('Content-Type', utwor.imageMimetype || 'image/jpeg');
     res.setHeader('Cache-Control', 'public, max-age=31536000'); // Cache na rok
     
     // Wyślij plik
@@ -340,52 +329,46 @@ router.get('/list', async (req: Request, res: Response): Promise<void> => {
     // Sprawdź czy są parametry wyszukiwania w query string
     const searchQuery = req.query.search as string | undefined;
     
-    // Podstawowe zapytanie z dodaną funkcją liczba_polubien
-    let query = `
-      SELECT 
-        u."ID_utworu", 
-        u.nazwa_utworu, 
-        u.data_wydania, 
-        u.filename, 
-        u.mimetype, 
-        u.filesize,
-        a.imie, 
-        a.nazwisko, 
-        a.kryptonim_artystyczny,
-        liczba_polubien(u."ID_utworu") as likes_count
-      FROM "Utwor" u
-      JOIN "Autorzy" a ON u."ID_autora" = a."ID_autora"
-    `;
-    
-    // Jeśli podano parametr wyszukiwania, dodaj warunek WHERE
-    let params = [];
-    if (searchQuery) {
-      query += ` 
-        WHERE LOWER(u.nazwa_utworu) LIKE LOWER($1)
-        OR LOWER(a.kryptonim_artystyczny) LIKE LOWER($1)
-      `;
-      params.push(`%${searchQuery}%`);
-    }
-    
-    // Dodaj sortowanie
-    query += ` ORDER BY u."ID_utworu" DESC`;
-    
-    // Wykonaj zapytanie
-    const utwory = await sql.unsafe(query, params);
+    // Pobierz utwory z bazy danych
+    const utwory = await prisma.utwor.findMany({
+      where: searchQuery ? {
+        OR: [
+          { nazwa_utworu: { contains: searchQuery, mode: 'insensitive' } },
+          { Autor: { kryptonim_artystyczny: { contains: searchQuery, mode: 'insensitive' } } }
+        ]
+      } : {},
+      include: {
+        Autor: {
+          select: {
+            imie: true,
+            nazwisko: true,
+            kryptonim_artystyczny: true
+          }
+        },
+        Polubienia: {
+          select: {
+            data_polubienia: true
+          }
+        }
+      },
+      orderBy: {
+        ID_utworu: 'desc'
+      }
+    });
     
     // Przekształć wyniki do oczekiwanego formatu
-    const formattedUtwory = utwory.map((utwor: any) => ({
+    const formattedUtwory = utwory.map((utwor) => ({
       ID_utworu: utwor.ID_utworu,
       nazwa_utworu: utwor.nazwa_utworu,
       data_wydania: utwor.data_wydania,
       filename: utwor.filename,
       mimetype: utwor.mimetype,
       filesize: utwor.filesize,
-      likes_count: Number(utwor.likes_count),
+      likes_count: utwor.Polubienia.length,
       Autor: {
-        imie: utwor.imie,
-        nazwisko: utwor.nazwisko,
-        kryptonim_artystyczny: utwor.kryptonim_artystyczny
+        imie: utwor.Autor.imie,
+        nazwisko: utwor.Autor.nazwisko,
+        kryptonim_artystyczny: utwor.Autor.kryptonim_artystyczny
       }
     }));
     
@@ -407,47 +390,44 @@ router.post('/list', async (req: Request, res: Response): Promise<void> => {
   try {
     const { searchQuery } = req.body;
     
-    let query = `
-      SELECT 
-        u."ID_utworu", 
-        u.nazwa_utworu, 
-        u.data_wydania, 
-        u.filename, 
-        u.mimetype, 
-        u.filesize,
-        a.imie, 
-        a.nazwisko, 
-        a.kryptonim_artystyczny,
-        liczba_polubien(u."ID_utworu") as likes_count
-      FROM "Utwor" u
-      JOIN "Autorzy" a ON u."ID_autora" = a."ID_autora"
-    `;
+    const utwory = await prisma.utwor.findMany({
+      where: searchQuery && searchQuery.trim() !== '' ? {
+        OR: [
+          { nazwa_utworu: { contains: searchQuery, mode: 'insensitive' } },
+          { Autor: { kryptonim_artystyczny: { contains: searchQuery, mode: 'insensitive' } } }
+        ]
+      } : {},
+      include: {
+        Autor: {
+          select: {
+            imie: true,
+            nazwisko: true,
+            kryptonim_artystyczny: true
+          }
+        },
+        Polubienia: {
+          select: {
+            data_polubienia: true
+          }
+        }
+      },
+      orderBy: {
+        ID_utworu: 'desc'
+      }
+    });
     
-    let params = [];
-    if (searchQuery && searchQuery.trim() !== '') {
-      query += `
-        WHERE LOWER(u.nazwa_utworu) LIKE LOWER($1)
-        OR LOWER(a.kryptonim_artystyczny) LIKE LOWER($1)
-      `;
-      params.push(`%${searchQuery}%`);
-    }
-    
-    query += ` ORDER BY u."ID_utworu" DESC`;
-    
-    const utwory = await sql.unsafe(query, params);
-    
-    const formattedUtwory = utwory.map((utwor: any) => ({
+    const formattedUtwory = utwory.map((utwor) => ({
       ID_utworu: utwor.ID_utworu,
       nazwa_utworu: utwor.nazwa_utworu,
       data_wydania: utwor.data_wydania,
       filename: utwor.filename,
       mimetype: utwor.mimetype,
       filesize: utwor.filesize,
-      likes_count: Number(utwor.likes_count),
+      likes_count: utwor.Polubienia.length,
       Autor: {
-        imie: utwor.imie,
-        nazwisko: utwor.nazwisko,
-        kryptonim_artystyczny: utwor.kryptonim_artystyczny
+        imie: utwor.Autor.imie,
+        nazwisko: utwor.Autor.nazwisko,
+        kryptonim_artystyczny: utwor.Autor.kryptonim_artystyczny
       }
     }));
     
@@ -471,22 +451,26 @@ router.delete('/delete/:utworId', async (req: Request<{utworId: string}>, res: R
     const id = parseInt(utworId);
     
     // Pobierz informacje o utworze z bazy danych wraz z danymi autora
-    const result = await sql`
-      SELECT u.*, a.imie, a.nazwisko, a.kryptonim_artystyczny  
-      FROM "Utwor" u
-      LEFT JOIN "Autorzy" a ON u."ID_autora" = a."ID_autora"
-      WHERE u."ID_utworu" = ${id}
-    `;
+    const utwor = await prisma.utwor.findUnique({
+      where: { ID_utworu: id },
+      include: {
+        Autor: {
+          select: {
+            imie: true,
+            nazwisko: true,
+            kryptonim_artystyczny: true
+          }
+        }
+      }
+    });
     
-    if (result.length === 0) {
+    if (!utwor) {
       res.status(404).json({ 
         success: false, 
         message: 'Utwór nie istnieje' 
       });
       return;
     }
-    
-    const utwor = result[0];
     
     // Usuń plik audio z dysku jeśli istnieje
     if (utwor.filepath && fs.existsSync(utwor.filepath)) {
@@ -498,18 +482,27 @@ router.delete('/delete/:utworId', async (req: Request<{utworId: string}>, res: R
       fs.unlinkSync(utwor.imagePath);
     }
     
-    await sql.begin(async (transaction) => {
+    // Wykonaj wszystkie operacje usuwania w transakcji
+    await prisma.$transaction(async (tx) => {
       // Usuń numeracje utworu
-      await transaction`DELETE FROM "Numeracja_utworu" WHERE "ID_utworu" = ${id}`;
+      await tx.numeracja_utworu.deleteMany({
+        where: { ID_utworu: id }
+      });
       
       // Usuń powiązania z playlistami
-      await transaction`DELETE FROM "PlaylistaUtwor" WHERE "ID_utworu" = ${id}`;
+      await tx.playlistaUtwor.deleteMany({
+        where: { ID_utworu: id }
+      });
       
       // Usuń polubienia
-      await transaction`DELETE FROM "Polubienia" WHERE "ID_piosenki" = ${id}`;
+      await tx.polubienia.deleteMany({
+        where: { ID_piosenki: id }
+      });
       
       // Na koniec usuń sam utwór
-      await transaction`DELETE FROM "Utwor" WHERE "ID_utworu" = ${id}`;
+      await tx.utwor.delete({
+        where: { ID_utworu: id }
+      });
     });
     
     // Zwróć sukces wraz z informacją o usuniętym utworze
@@ -521,9 +514,9 @@ router.delete('/delete/:utworId', async (req: Request<{utworId: string}>, res: R
         nazwa_utworu: utwor.nazwa_utworu,
         data_wydania: utwor.data_wydania,
         Autor: {
-          imie: utwor.imie,
-          nazwisko: utwor.nazwisko,
-          kryptonim_artystyczny: utwor.kryptonim_artystyczny
+          imie: utwor.Autor.imie,
+          nazwisko: utwor.Autor.nazwisko,
+          kryptonim_artystyczny: utwor.Autor.kryptonim_artystyczny
         }
       }
     });
@@ -544,13 +537,16 @@ router.get('/play/:utworId', async (req: Request<{utworId: string}>, res: Respon
     const id = parseInt(utworId);
     
     // Pobierz informacje o utworze z bazy danych
-    const result = await sql`
-      SELECT filepath, filename, mimetype
-      FROM "Utwor"
-      WHERE "ID_utworu" = ${id}
-    `;
+    const utwor = await prisma.utwor.findUnique({
+      where: { ID_utworu: id },
+      select: {
+        filepath: true,
+        filename: true,
+        mimetype: true
+      }
+    });
     
-    if (result.length === 0 || !result[0].filepath) {
+    if (!utwor || !utwor.filepath) {
       res.status(404).json({ 
         success: false,
         message: 'Utwór nie istnieje lub nie ma powiązanego pliku' 
@@ -558,7 +554,6 @@ router.get('/play/:utworId', async (req: Request<{utworId: string}>, res: Respon
       return;
     }
     
-    const utwor = result[0];
     const filePath = utwor.filepath;
     
     // Sprawdzamy, czy plik istnieje
@@ -625,12 +620,12 @@ router.put('/update/:utworId', async (req: Request<{utworId: string}>, res: Resp
     const { nazwa_utworu, data_wydania, kryptonim_artystyczny } = req.body;
     
     // Sprawdź czy utwór istnieje
-    const utworExists = await sql`
-      SELECT "ID_utworu", "ID_autora" FROM "Utwor" 
-      WHERE "ID_utworu" = ${id}
-    `;
+    const utworExists = await prisma.utwor.findUnique({
+      where: { ID_utworu: id },
+      select: { ID_utworu: true }
+    });
     
-    if (utworExists.length === 0) {
+    if (!utworExists) {
       res.status(404).json({
         success: false,
         message: 'Utwór nie istnieje'
@@ -638,51 +633,45 @@ router.put('/update/:utworId', async (req: Request<{utworId: string}>, res: Resp
       return;
     }
     
-    const utwor = utworExists[0];
-    
     // Sprawdź czy autor istnieje lub stwórz nowego jeśli potrzeba
-    let autorId;
-    const autorResult = await sql`
-      SELECT "ID_autora" FROM "Autorzy" 
-      WHERE kryptonim_artystyczny = ${kryptonim_artystyczny}
-    `;
+    let autor = await prisma.autorzy.findFirst({
+      where: { kryptonim_artystyczny }
+    });
     
-    if (autorResult.length === 0) {
+    if (!autor) {
       // Autor nie istnieje, stwórz nowego
-      const nowyAutorResult = await sql`
-        INSERT INTO "Autorzy" (imie, nazwisko, kryptonim_artystyczny)
-        VALUES ('', '', ${kryptonim_artystyczny})
-        RETURNING "ID_autora"
-      `;
-      autorId = nowyAutorResult[0].ID_autora;
-    } else {
-      // Autor istnieje
-      autorId = autorResult[0].ID_autora;
+      autor = await prisma.autorzy.create({
+        data: {
+          imie: '',
+          nazwisko: '',
+          kryptonim_artystyczny
+        }
+      });
     }
     
     // Aktualizuj utwór w bazie danych
-    const updatedUtwor = await sql`
-      UPDATE "Utwor" SET
-        nazwa_utworu = ${nazwa_utworu},
-        data_wydania = ${data_wydania},
-        "ID_autora" = ${autorId}
-      WHERE "ID_utworu" = ${id}
-      RETURNING "ID_utworu", nazwa_utworu, data_wydania, "ID_autora"
-    `;
-    
-    // Pobierz zaktualizowane informacje o autorze
-    const autorInfo = await sql`
-      SELECT imie, nazwisko, kryptonim_artystyczny
-      FROM "Autorzy"
-      WHERE "ID_autora" = ${autorId}
-    `;
+    const updatedUtwor = await prisma.utwor.update({
+      where: { ID_utworu: id },
+      data: {
+        nazwa_utworu,
+        data_wydania,
+        ID_autora: autor.ID_autora
+      },
+      include: {
+        Autor: true
+      }
+    });
     
     res.status(200).json({
       success: true,
       message: 'Utwór zaktualizowany pomyślnie',
       utwor: {
-        ...updatedUtwor[0],
-        autor: autorInfo[0]
+        ...updatedUtwor,
+        autor: {
+          imie: updatedUtwor.Autor.imie,
+          nazwisko: updatedUtwor.Autor.nazwisko,
+          kryptonim_artystyczny: updatedUtwor.Autor.kryptonim_artystyczny
+        }
       }
     });
   } catch (error) {
@@ -702,13 +691,14 @@ router.delete('/image/:utworId', async (req: Request<{utworId: string}>, res: Re
     const id = parseInt(utworId);
     
     // Pobierz informacje o obrazie z bazy danych
-    const result = await sql`
-      SELECT "imagePath", "imageFilename", "imageMimetype"
-      FROM "Utwor"
-      WHERE "ID_utworu" = ${id}
-    `;
+    const utwor = await prisma.utwor.findUnique({
+      where: { ID_utworu: id },
+      select: {
+        imagePath: true
+      }
+    });
     
-    if (result.length === 0) {
+    if (!utwor) {
       res.status(404).json({ 
         success: false, 
         message: 'Utwór nie istnieje' 
@@ -716,22 +706,21 @@ router.delete('/image/:utworId', async (req: Request<{utworId: string}>, res: Re
       return;
     }
     
-    const utwor = result[0];
-    
     // Usuń plik z dysku jeśli istnieje
     if (utwor.imagePath && fs.existsSync(utwor.imagePath)) {
       fs.unlinkSync(utwor.imagePath);
     }
     
     // Wyczyść dane obrazu w bazie danych
-    await sql`
-      UPDATE "Utwor" SET
-        "imageFilename" = NULL,
-        "imagePath" = NULL,
-        "imageMimetype" = NULL,
-        "imageSize" = NULL
-      WHERE "ID_utworu" = ${id}
-    `;
+    await prisma.utwor.update({
+      where: { ID_utworu: id },
+      data: {
+        imageFilename: null,
+        imagePath: null,
+        imageMimetype: null,
+        imageSize: null
+      }
+    });
     
     res.json({
       success: true,

@@ -3,8 +3,9 @@ import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
 import { v4 as uuidv4 } from 'uuid';
-import { sql } from 'bun';
+import { PrismaClient } from '@prisma/client';
 
+const prisma = new PrismaClient();
 const router = Router();
 
 // Konfiguracja multer dla zdjęć profilowych
@@ -60,19 +61,21 @@ router.post('/upload-profile-image', uploadProfileImage.single('profileImage'), 
     }
     
     // Sprawdź czy użytkownik istnieje
-    const userResult = await sql`
-      SELECT "ID_uzytkownik", "profileImagePath", "profileImageFilename" FROM "Uzytkownik" 
-      WHERE "ID_uzytkownik" = ${userId}
-    `;
+    const user = await prisma.uzytkownik.findUnique({
+      where: { ID_uzytkownik: parseInt(userId) },
+      select: {
+        ID_uzytkownik: true,
+        profileImagePath: true,
+        profileImageFilename: true
+      }
+    });
     
-    if (userResult.length === 0) {
+    if (!user) {
       // Usuń plik jeśli użytkownik nie istnieje
       fs.unlinkSync(path.join('/app/uploads/user-images', req.file.filename));
       res.status(404).json({ success: false, message: 'Użytkownik nie istnieje' });
       return;
     }
-
-    const user = userResult[0];
     
     // Usuń stare zdjęcie profilowe jeśli istnieje, nie jest domyślnym i ma filename
     if (user.profileImagePath && 
@@ -86,17 +89,20 @@ router.post('/upload-profile-image', uploadProfileImage.single('profileImage'), 
     }
 
     // Zapisz informacje o nowym zdjęciu profilowym w bazie danych
-    const result = await sql`
-      UPDATE "Uzytkownik" SET
-        "profileImageFilename" = ${req.file.filename},
-        "profileImagePath" = ${`/uploads/user-images/${req.file.filename}`},
-        "profileImageMimetype" = ${req.file.mimetype},
-        "profileImageSize" = ${req.file.size}
-      WHERE "ID_uzytkownik" = ${userId}
-      RETURNING "ID_uzytkownik", nick, "profileImagePath"
-    `;
-    
-    const updatedUser = result[0];
+    const updatedUser = await prisma.uzytkownik.update({
+      where: { ID_uzytkownik: parseInt(userId) },
+      data: {
+        profileImageFilename: req.file.filename,
+        profileImagePath: `/uploads/user-images/${req.file.filename}`,
+        profileImageMimetype: req.file.mimetype,
+        profileImageSize: req.file.size
+      },
+      select: {
+        ID_uzytkownik: true,
+        nick: true,
+        profileImagePath: true
+      }
+    });
     
     // Zwracamy informacje o przesłanym zdjęciu
     res.status(200).json({
@@ -130,13 +136,16 @@ router.get('/profile-image/:userId', async (req: Request<{userId: string}>, res:
     const id = parseInt(userId);
     
     // Pobierz informacje o zdjęciu profilowym z bazy danych
-    const result = await sql`
-      SELECT "profileImagePath", "profileImageFilename", "profileImageMimetype"
-      FROM "Uzytkownik"
-      WHERE "ID_uzytkownik" = ${id}
-    `;
+    const user = await prisma.uzytkownik.findUnique({
+      where: { ID_uzytkownik: id },
+      select: {
+        profileImagePath: true,
+        profileImageFilename: true,
+        profileImageMimetype: true
+      }
+    });
     
-    if (result.length === 0) {
+    if (!user) {
       res.status(404).json({ 
         success: false,
         message: 'Użytkownik nie istnieje' 
@@ -144,7 +153,6 @@ router.get('/profile-image/:userId', async (req: Request<{userId: string}>, res:
       return;
     }
     
-    const user = result[0];
     let filePath;
     let mimeType = 'image/jpeg'; // Domyślny typ MIME dla default-profile.jpg
     
@@ -200,21 +208,22 @@ router.delete('/profile-image/:userId', async (req: Request<{userId: string}>, r
     const id = parseInt(userId);
     
     // Pobierz informacje o użytkowniku
-    const result = await sql`
-      SELECT "ID_uzytkownik", "profileImagePath", nick
-      FROM "Uzytkownik"
-      WHERE "ID_uzytkownik" = ${id}
-    `;
+    const user = await prisma.uzytkownik.findUnique({
+      where: { ID_uzytkownik: id },
+      select: {
+        ID_uzytkownik: true,
+        profileImagePath: true,
+        nick: true
+      }
+    });
     
-    if (result.length === 0) {
+    if (!user) {
       res.status(404).json({ 
         success: false, 
         message: 'Użytkownik nie istnieje' 
       });
       return;
     }
-    
-    const user = result[0];
     
     // Usuń plik z dysku jeśli istnieje i nie jest domyślnym
     if (user.profileImagePath && user.profileImagePath !== '/uploads/user-images/default-profile.jpg') {
@@ -225,14 +234,15 @@ router.delete('/profile-image/:userId', async (req: Request<{userId: string}>, r
     }
     
     // Wyczyść dane zdjęcia profilowego w bazie danych
-    await sql`
-      UPDATE "Uzytkownik" SET
-        "profileImageFilename" = NULL,
-        "profileImagePath" = NULL,
-        "profileImageMimetype" = NULL,
-        "profileImageSize" = NULL
-      WHERE "ID_uzytkownik" = ${id}
-    `;
+    await prisma.uzytkownik.update({
+      where: { ID_uzytkownik: id },
+      data: {
+        profileImageFilename: null,
+        profileImagePath: null,
+        profileImageMimetype: null,
+        profileImageSize: null
+      }
+    });
     
     res.json({
       success: true,
